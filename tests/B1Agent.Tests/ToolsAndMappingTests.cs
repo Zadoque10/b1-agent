@@ -10,8 +10,7 @@ public class ToolsAndMappingTests
 {
     private static readonly FakeTimeProvider Time = new(new DateTimeOffset(2026, 10, 8, 12, 0, 0, TimeSpan.Zero));
 
-    private static B1Tools Tools(ISapB1Client? sap = null) =>
-        new(sap ?? new DemoSapB1Client(Time), NullLogger<B1Tools>.Instance);
+    private static B1Tools Tools(ISapB1Client? sap = null) => new Demo(sap).Tools;
 
     [Fact]
     public void Available_credit_is_unknown_when_no_credit_limit_is_set()
@@ -88,12 +87,13 @@ public class ToolsAndMappingTests
     }
 
     [Fact]
-    public void Exposes_six_read_only_tools_with_descriptions()
+    public void Exposes_tools_with_descriptions_and_none_that_writes_to_SAP()
     {
         var tools = Tools().AsAITools();
-        Assert.Equal(6, tools.Count);
+        Assert.Equal(14, tools.Count);
         Assert.All(tools, t => Assert.False(string.IsNullOrWhiteSpace(t.Description)));
-        Assert.DoesNotContain(tools, t => t.Name.StartsWith("create") || t.Name.StartsWith("update") || t.Name.StartsWith("delete"));
+        Assert.DoesNotContain(tools, t => t.Name.StartsWith("create") || t.Name.StartsWith("update") ||
+                                          t.Name.StartsWith("delete") || t.Name.Contains("confirm"));
     }
 
     private sealed class FailingClient : ISapB1Client
@@ -105,5 +105,11 @@ public class ToolsAndMappingTests
         public Task<ItemStock?> GetItemStockAsync(string c, CancellationToken ct) => throw Fail();
         public Task<IReadOnlyList<DocumentSummary>> GetOpenSalesOrdersAsync(string? c, int t, CancellationToken ct) => throw Fail();
         public Task<IReadOnlyList<DocumentSummary>> GetOpenInvoicesAsync(string? c, int t, CancellationToken ct) => throw Fail();
+        public Task<IReadOnlyList<DocumentSummary>> GetAllOpenInvoicesAsync(string? c, CancellationToken ct) => throw Fail();
+        public Task<IReadOnlyList<DocumentSummary>> GetLateSalesOrdersAsync(int t, CancellationToken ct) => throw Fail();
+        public Task<IReadOnlyList<IncomingSupply>> GetIncomingSupplyAsync(string i, CancellationToken ct) => throw Fail();
+        public Task<IReadOnlyList<ItemStockLevel>> GetStockLevelsAsync(CancellationToken ct) => throw Fail();
+        public Task<ItemPricing?> GetItemPricingAsync(string i, CancellationToken ct) => throw Fail();
+        public Task<IReadOnlyList<BusinessPartnerDetail>> GetCustomersWithBalanceAsync(CancellationToken ct) => throw Fail();
     }
 }

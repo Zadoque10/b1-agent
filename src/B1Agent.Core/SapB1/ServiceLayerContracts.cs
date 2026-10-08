@@ -10,6 +10,16 @@ internal sealed class SlCollection<T>
 {
     [JsonPropertyName("value")]
     public List<T> Value { get; set; } = [];
+
+    // Service Layer v1 uses "odata.nextLink", v2 uses "@odata.nextLink".
+    [JsonPropertyName("odata.nextLink")]
+    public string? NextLinkV1 { get; set; }
+
+    [JsonPropertyName("@odata.nextLink")]
+    public string? NextLinkV2 { get; set; }
+
+    [JsonIgnore]
+    public string? NextLink => NextLinkV2 ?? NextLinkV1;
 }
 
 internal sealed class SlBusinessPartner
@@ -22,6 +32,7 @@ internal sealed class SlBusinessPartner
     public decimal? OpenOrdersBalance { get; set; }
     public string? Phone1 { get; set; }
     public string? EmailAddress { get; set; }
+    public int? PriceListNum { get; set; }
 }
 
 internal sealed class SlItem
@@ -30,6 +41,14 @@ internal sealed class SlItem
     public string ItemName { get; set; } = "";
     public decimal? QuantityOnStock { get; set; }
     public List<SlItemWarehouse>? ItemWarehouseInfoCollection { get; set; }
+    public List<SlItemPrice>? ItemPrices { get; set; }
+}
+
+internal sealed class SlItemPrice
+{
+    public int PriceList { get; set; }
+    public decimal? Price { get; set; }
+    public string? Currency { get; set; }
 }
 
 internal sealed class SlItemWarehouse
@@ -38,6 +57,8 @@ internal sealed class SlItemWarehouse
     public decimal? InStock { get; set; }
     public decimal? Committed { get; set; }
     public decimal? Ordered { get; set; }
+    public decimal? MinimalStock { get; set; }
+    public decimal? MaximalStock { get; set; }
 }
 
 internal sealed class SlDocument
@@ -51,6 +72,31 @@ internal sealed class SlDocument
     public decimal? DocTotal { get; set; }
     public decimal? PaidToDate { get; set; }
     public string? DocCurrency { get; set; }
+}
+
+internal sealed class SlDocumentLine
+{
+    public int DocEntry { get; set; }
+    public string ItemCode { get; set; } = "";
+    public decimal? RemainingOpenQuantity { get; set; }
+    public string? ShipDate { get; set; }
+    public string? WarehouseCode { get; set; }
+}
+
+/// <summary>One row of a $crossjoin(PurchaseOrders,PurchaseOrders/DocumentLines) query.</summary>
+internal sealed class SlPurchaseOrderLineRow
+{
+    [JsonPropertyName("PurchaseOrders")]
+    public SlDocument? Order { get; set; }
+
+    [JsonPropertyName("PurchaseOrders/DocumentLines")]
+    public SlDocumentLine? Line { get; set; }
+}
+
+internal sealed class SlCreated
+{
+    public int DocEntry { get; set; }
+    public int DocNum { get; set; }
 }
 
 internal sealed class SlError
@@ -98,7 +144,7 @@ internal static class SlMapper
 
         return new BusinessPartnerDetail(
             bp.CardCode, bp.CardName, MapCardType(bp.CardType),
-            balance, limit, openOrders, available, bp.Phone1, bp.EmailAddress);
+            balance, limit, openOrders, available, bp.Phone1, bp.EmailAddress, bp.PriceListNum ?? 0);
     }
 
     public static ItemStock ToStock(SlItem item)
@@ -116,6 +162,20 @@ internal static class SlMapper
 
         return new ItemStock(item.ItemCode, item.ItemName, warehouses.Sum(w => w.Available), warehouses);
     }
+
+    public static IEnumerable<ItemStockLevel> ToStockLevels(SlItem item) =>
+        (item.ItemWarehouseInfoCollection ?? []).Select(w => new ItemStockLevel(
+            item.ItemCode, item.ItemName, w.WarehouseCode,
+            w.InStock ?? 0m, w.Committed ?? 0m, w.Ordered ?? 0m, w.MinimalStock ?? 0m, w.MaximalStock ?? 0m));
+
+    public static ItemPricing ToPricing(SlItem item) =>
+        new(item.ItemCode, item.ItemName,
+            (item.ItemPrices ?? []).Where(p => p.Price is > 0)
+                .Select(p => new PriceListPrice(p.PriceList, p.Price!.Value, p.Currency ?? "")).ToList());
+
+    public static IncomingSupply ToSupply(SlPurchaseOrderLineRow row) =>
+        new(row.Order?.DocNum ?? 0, row.Order?.CardName ?? "", row.Line?.WarehouseCode ?? "",
+            row.Line?.RemainingOpenQuantity ?? 0m, ParseDate(row.Line?.ShipDate ?? row.Order?.DocDueDate));
 
     public static DocumentSummary ToDocument(SlDocument doc, DateOnly today)
     {

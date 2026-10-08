@@ -14,15 +14,23 @@ namespace B1Agent.Core.SapB1;
 /// handler with a CookieContainer, and this class must be a singleton so the session is reused across requests.
 /// When a session expires (HTTP 401) the client logs in again once and retries the request.
 /// </summary>
-public sealed class ServiceLayerClient : ISapB1Client
+public sealed class ServiceLayerClient : ISapB1Client, ISapB1Writer
 {
+    // Reading is case-insensitive. Writing keeps .NET's PascalCase, because Service Layer property names
+    // (CardCode, DocumentLines, CompanyDB...) are case-sensitive.
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
+    private static readonly JsonSerializerOptions WriteJson = new(JsonSerializerDefaults.General);
 
     private readonly HttpClient _http;
     private readonly SapB1Options _options;
     private readonly TimeProvider _time;
     private readonly ILogger<ServiceLayerClient> _logger;
     private readonly SemaphoreSlim _loginLock = new(1, 1);
+
+    private const string PartnerDetailFields =
+        "CardCode,CardName,CardType,CurrentAccountBalance,CreditLimit,OpenOrdersBalance,Phone1,EmailAddress,PriceListNum";
+    private const string DocumentFields = "DocEntry,DocNum,CardCode,CardName,DocDate,DocDueDate,DocTotal,PaidToDate,DocCurrency";
+    private const int ScanPageSize = 100;
 
     // Incremented on every successful login. Lets concurrent requests that all hit a 401 trigger only one re-login.
     private int _sessionVersion;
@@ -51,7 +59,7 @@ public sealed class ServiceLayerClient : ISapB1Client
     public async Task<BusinessPartnerDetail?> GetBusinessPartnerAsync(string cardCode, CancellationToken ct = default)
     {
         var url = ODataQuery.Key("BusinessPartners", cardCode.Trim()) +
-                  "?$select=CardCode,CardName,CardType,CurrentAccountBalance,CreditLimit,OpenOrdersBalance,Phone1,EmailAddress";
+                  "?$select=" + PartnerDetailFields;
 
         var bp = await GetAsync<SlBusinessPartner>(url, ct, notFoundIsNull: true);
         return bp is null ? null : SlMapper.ToDetail(bp);
@@ -91,53 +99,172 @@ public sealed class ServiceLayerClient : ISapB1Client
             filter += " and CardCode eq " + ODataQuery.Literal(cardCode.Trim());
 
         var url = ODataQuery.Build(resource,
-            select: "DocEntry,DocNum,CardCode,CardName,DocDate,DocDueDate,DocTotal,PaidToDate,DocCurrency",
+            select: DocumentFields,
             filter: filter,
             orderBy: "DocDueDate asc",
             top: Clamp(top));
 
-        var today = DateOnly.FromDateTime(_time.GetLocalNow().DateTime);
+        var today = Today();
         var result = await GetAsync<SlCollection<SlDocument>>(url, ct);
         return result!.Value.Select(d => SlMapper.ToDocument(d, today)).ToList();
     }
+
+
+    // ---------------------------------------------------------------- scans used by the insights
+
+    public async Task<IReadOnlyList<DocumentSummary>> GetAllOpenInvoicesAsync(string? cardCode, CancellationToken ct = default)
+    {
+        var filter = "DocumentStatus eq 'bost_Open'";
+        if (!string.IsNullOrWhiteSpace(cardCode))
+            filter += " and CardCode eq " + ODataQuery.Literal(cardCode.Trim());
+
+        var url = ODataQuery.Build("Invoices", select: DocumentFields, filter: filter, orderBy: "DocDueDate asc");
+        var today = Today();
+        return (await ScanAsync<SlDocument>(url, ct)).Select(d => SlMapper.ToDocument(d, today)).ToList();
+    }
+
+    public async Task<IReadOnlyList<DocumentSummary>> GetLateSalesOrdersAsync(int top, CancellationToken ct = default)
+    {
+        var today = Today();
+        var url = ODataQuery.Build("Orders",
+            select: DocumentFields,
+            filter: $"DocumentStatus eq 'bost_Open' and DocDueDate lt {ODataQuery.Literal(today.ToString("yyyy-MM-dd"))}",
+            orderBy: "DocDueDate asc",
+            top: Clamp(top));
+
+        var result = await GetAsync<SlCollection<SlDocument>>(url, ct);
+        return result!.Value.Select(d => SlMapper.ToDocument(d, today)).ToList();
+    }
+
+    // Header and lines in one round trip with $crossjoin, so we read only the open lines for this item.
+    public async Task<IReadOnlyList<IncomingSupply>> GetIncomingSupplyAsync(string itemCode, CancellationToken ct = default)
+    {
+        var expand = "PurchaseOrders($select=DocNum,CardName,DocDueDate)," +
+                     "PurchaseOrders/DocumentLines($select=DocEntry,ItemCode,RemainingOpenQuantity,ShipDate,WarehouseCode)";
+        var filter = "PurchaseOrders/DocEntry eq PurchaseOrders/DocumentLines/DocEntry" +
+                     " and PurchaseOrders/DocumentStatus eq 'bost_Open'" +
+                     " and PurchaseOrders/DocumentLines/LineStatus eq 'bost_Open'" +
+                     " and PurchaseOrders/DocumentLines/ItemCode eq " + ODataQuery.Literal(itemCode.Trim());
+
+        var url = "$crossjoin(PurchaseOrders,PurchaseOrders/DocumentLines)" +
+                  "?$expand=" + Uri.EscapeDataString(expand) + "&$filter=" + Uri.EscapeDataString(filter);
+
+        return (await ScanAsync<SlPurchaseOrderLineRow>(url, ct))
+            .Select(SlMapper.ToSupply)
+            .Where(s => s.Quantity > 0)
+            .OrderBy(s => s.ExpectedDate)
+            .ToList();
+    }
+
+    public async Task<IReadOnlyList<ItemStockLevel>> GetStockLevelsAsync(CancellationToken ct = default)
+    {
+        var url = ODataQuery.Build("Items",
+            select: "ItemCode,ItemName,ItemWarehouseInfoCollection",
+            filter: "InventoryItem eq 'tYES' and Valid eq 'tYES'",
+            orderBy: "ItemCode");
+
+        return (await ScanAsync<SlItem>(url, ct)).SelectMany(SlMapper.ToStockLevels).ToList();
+    }
+
+    public async Task<ItemPricing?> GetItemPricingAsync(string itemCode, CancellationToken ct = default)
+    {
+        var url = ODataQuery.Key("Items", itemCode.Trim()) + "?$select=ItemCode,ItemName,ItemPrices";
+        var item = await GetAsync<SlItem>(url, ct, notFoundIsNull: true);
+        return item is null ? null : SlMapper.ToPricing(item);
+    }
+
+    public async Task<IReadOnlyList<BusinessPartnerDetail>> GetCustomersWithBalanceAsync(CancellationToken ct = default)
+    {
+        var url = ODataQuery.Build("BusinessPartners",
+            select: PartnerDetailFields,
+            filter: "CardType eq 'cCustomer' and CurrentAccountBalance gt 0",
+            orderBy: "CardCode");
+
+        return (await ScanAsync<SlBusinessPartner>(url, ct)).Select(SlMapper.ToDetail).ToList();
+    }
+
+    // ---------------------------------------------------------------- the one write
+
+    public async Task<CreatedDocument> CreateSalesQuotationAsync(QuotationDraft draft, CancellationToken ct = default)
+    {
+        var body = new
+        {
+            draft.CardCode,
+            DocDueDate = draft.ValidUntil.ToString("yyyy-MM-dd"),
+            draft.Comments,
+            DocumentLines = draft.Lines.Select(l => new { l.ItemCode, l.Quantity, l.UnitPrice }).ToList()
+        };
+
+        var created = await SendAsync<SlCreated>(() => new HttpRequestMessage(HttpMethod.Post, "Quotations")
+        {
+            Content = JsonContent.Create(body, options: WriteJson)
+        }, "POST Quotations", notFoundIsNull: false, ct);
+
+        _logger.LogInformation("Created sales quotation {DocNum} for {CardCode}", created!.DocNum, draft.CardCode);
+        return new CreatedDocument(created.DocEntry, created.DocNum);
+    }
+
+    private DateOnly Today() => DateOnly.FromDateTime(_time.GetLocalNow().DateTime);
 
     private int Clamp(int top) => Math.Clamp(top, 1, _options.MaxRows);
 
     // ---------------------------------------------------------------- HTTP + session
 
-    private async Task<T?> GetAsync<T>(string relativeUrl, CancellationToken ct, bool notFoundIsNull = false) where T : class
+    private Task<T?> GetAsync<T>(string relativeUrl, CancellationToken ct, bool notFoundIsNull = false, int? pageSize = null) where T : class =>
+        SendAsync<T>(() =>
+        {
+            var request = new HttpRequestMessage(HttpMethod.Get, relativeUrl);
+            // Without this, Service Layer pages at 20 rows regardless of $top.
+            request.Headers.TryAddWithoutValidation("Prefer", $"odata.maxpagesize={pageSize ?? _options.MaxRows}");
+            return request;
+        }, "GET " + relativeUrl, notFoundIsNull, ct);
+
+    /// <summary>Follows nextLink pages until the collection ends or MaxScanRows is reached.</summary>
+    private async Task<List<T>> ScanAsync<T>(string relativeUrl, CancellationToken ct)
+    {
+        var rows = new List<T>();
+        string? next = relativeUrl;
+        while (next is not null && rows.Count < _options.MaxScanRows)
+        {
+            var page = await GetAsync<SlCollection<T>>(next, ct, pageSize: ScanPageSize);
+            rows.AddRange(page!.Value);
+            next = page.NextLink;
+        }
+
+        if (next is not null)
+            _logger.LogWarning("Stopped reading {Url} at {Rows} rows (SapB1:MaxScanRows)", relativeUrl, rows.Count);
+
+        return rows.Count > _options.MaxScanRows ? rows[.._options.MaxScanRows] : rows;
+    }
+
+    // Requests are built by a factory because an HttpRequestMessage cannot be sent twice (we may retry after re-login).
+    private async Task<T?> SendAsync<T>(Func<HttpRequestMessage> createRequest, string operation, bool notFoundIsNull, CancellationToken ct) where T : class
     {
         var version = await EnsureSessionAsync(ct);
 
-        using var first = await SendGetAsync(relativeUrl, ct);
-        if (first.StatusCode != HttpStatusCode.Unauthorized)
-            return await ReadAsync<T>(first, relativeUrl, notFoundIsNull, ct);
+        using (var first = await _http.SendAsync(createRequest(), ct))
+        {
+            if (first.StatusCode != HttpStatusCode.Unauthorized)
+                return await ReadAsync<T>(first, operation, notFoundIsNull, ct);
+        }
 
         _logger.LogInformation("Service Layer session expired, logging in again");
         await RenewSessionAsync(version, ct);
 
-        using var retry = await SendGetAsync(relativeUrl, ct);
-        return await ReadAsync<T>(retry, relativeUrl, notFoundIsNull, ct);
+        using var retry = await _http.SendAsync(createRequest(), ct);
+        return await ReadAsync<T>(retry, operation, notFoundIsNull, ct);
     }
 
-    private Task<HttpResponseMessage> SendGetAsync(string relativeUrl, CancellationToken ct)
-    {
-        var request = new HttpRequestMessage(HttpMethod.Get, relativeUrl);
-        // Without this, Service Layer pages at 20 rows regardless of $top.
-        request.Headers.TryAddWithoutValidation("Prefer", $"odata.maxpagesize={_options.MaxRows}");
-        return _http.SendAsync(request, ct);
-    }
-
-    private static async Task<T?> ReadAsync<T>(HttpResponseMessage response, string url, bool notFoundIsNull, CancellationToken ct) where T : class
+    private static async Task<T?> ReadAsync<T>(HttpResponseMessage response, string operation, bool notFoundIsNull, CancellationToken ct) where T : class
     {
         if (notFoundIsNull && response.StatusCode == HttpStatusCode.NotFound)
             return null;
 
         if (!response.IsSuccessStatusCode)
-            throw await ToExceptionAsync(response, $"GET {url}", ct);
+            throw await ToExceptionAsync(response, operation, ct);
 
         return await response.Content.ReadFromJsonAsync<T>(Json, ct)
-               ?? throw new ServiceLayerException($"Empty response from Service Layer for GET {url}");
+               ?? throw new ServiceLayerException($"Empty response from Service Layer for {operation}");
     }
 
     private async Task<int> EnsureSessionAsync(CancellationToken ct)
@@ -158,7 +285,7 @@ public sealed class ServiceLayerClient : ISapB1Client
             if (_sessionVersion != expiredVersion) return;
 
             var body = new { _options.CompanyDB, _options.UserName, _options.Password };
-            using var response = await _http.PostAsJsonAsync("Login", body, Json, ct);
+            using var response = await _http.PostAsJsonAsync("Login", body, WriteJson, ct);
             if (!response.IsSuccessStatusCode)
                 throw await ToExceptionAsync(response, "Login", ct);
 

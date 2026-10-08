@@ -2,9 +2,11 @@
 
 [![CI](https://github.com/OWNER/b1-agent/actions/workflows/ci.yml/badge.svg)](https://github.com/OWNER/b1-agent/actions/workflows/ci.yml)
 
-A natural-language assistant for **SAP Business One**. Users ask questions in plain language
-("Is Microchips over its credit limit?", "Can we ship 50 units of A00001 today?") and an LLM answers
-by calling read-only tools that query the **Service Layer**.
+A natural-language assistant for **SAP Business One**. Users ask in plain language
+("Who should I call first about overdue invoices?", "When can we ship 15 units of A00003?",
+"Quote 20 printers for Parameter Technology") and an LLM answers by calling tools over the **Service Layer**.
+The arithmetic (aging, credit exposure, available-to-promise, reorder quantities) is done in tested C#,
+so the model only explains finished numbers.
 
 Built with .NET 10, ASP.NET Core and [Microsoft.Extensions.AI](https://learn.microsoft.com/dotnet/ai/microsoft-extensions-ai),
 so the LLM provider is a configuration choice: OpenAI, Azure OpenAI, or a local model through Ollama.
@@ -14,6 +16,22 @@ It runs out of the box in **demo mode** with sample data, so no SAP installation
 ![B1 Agent home](docs/hero.png)
 
 ![A question answered from SAP data, with the tools the agent called](docs/conversation.png)
+
+## What it does for a B1 user
+
+| Who | Question they ask today | What the agent does |
+|---|---|---|
+| Finance / collections | "Who do I call first?" | A/R aging per customer in 0-30 / 31-60 / 61-90 / 90+ buckets, largest overdue first |
+| Sales rep | "Can I accept an $8,000 order from Norm Thompson?" | Credit check: balance + open orders + new order vs limit, plus overdue policy. **Approve / Review / Block** with reasons |
+| Customer service | "When can we ship 15 of A00003?" | Available-to-promise: stock now, then open purchase order lines by expected date, until the quantity is covered |
+| Purchasing | "What should I reorder this week?" | Items whose projected stock (in stock - committed + on order) is under the item's minimum, with a quantity up to the maximum |
+| Sales rep | "What does Parameter Technology pay for A00005?" | Price from the customer's price list, falling back to the default list |
+| Sales rep | "Quote 2 x A00001 and 20 x A00005 for Parameter Technology" | Prepares a sales quotation with prices, stock per line and the credit verdict. **It is only created in SAP when the user clicks Confirm** |
+| Manager | (opens the page) | **Daily brief**: overdue receivables by age, late sales orders, items below minimum, customers over limit. No LLM needed |
+
+![Daily brief](docs/brief.png)
+
+![A quotation proposal waiting for confirmation](docs/quotation.png)
 
 ## How it works
 
@@ -47,11 +65,25 @@ is handled by `UseFunctionInvocation()` from Microsoft.Extensions.AI, capped at 
 | `get_item_stock` | Stock per warehouse: in stock, committed, ordered, available |
 | `get_open_sales_orders` | Open sales orders, soonest due first |
 | `get_open_invoices` | Open A/R invoices with unpaid balance and days overdue |
+| `get_ar_aging` | Receivables per customer by age bucket |
+| `check_credit_for_order` | Approve / Review / Block for a new order amount, with reasons |
+| `check_item_availability` | Can it ship now, and if not, from which date (open purchase orders) |
+| `get_late_sales_orders` | Open sales orders past their due date |
+| `get_reorder_suggestions` | Items below minimum stock and how much to buy |
+| `get_item_price` | Unit price from the customer's price list |
+| `get_daily_brief` | The overview above, for "how are we doing today?" |
+| `prepare_sales_quotation` | A quotation **proposal**. Creates nothing; the user confirms in the UI |
 
 ### Design decisions
 
-- **Read-only by design.** No tool creates or changes documents. Write actions (e.g. drafting a sales
-  order) would need an explicit human confirmation step, which is on the roadmap.
+- **Nothing is written without a person.** The model can only *prepare* a sales quotation. The proposal is stored
+  server-side and shown as a card; it reaches SAP only through `POST /api/actions/{id}/confirm`, which no LLM tool can call.
+  The write method lives on a separate interface (`ISapB1Writer`) that the tools never receive. Proposals expire,
+  and a double click cannot create two quotations.
+- **Code does the maths.** Aging, credit, available-to-promise and reorder rules are pure functions in
+  `Insights/Calculations.cs`, unit-tested on their own. The model receives finished numbers and verdicts.
+- **Business rules are configuration.** Overdue thresholds for Review/Block, default price list, quotation validity
+  and proposal lifetime are in the `Policy` section of `appsettings.json`.
 - **The model never writes queries.** Tools take plain values (a code, a search term); the client builds the
   OData URL and escapes every value, so user text cannot alter the filter. There is a test for exactly that.
 - **Hard limits outside the model.** Row counts are capped in the client (`SapB1:MaxRows`), whatever the model asks for.
@@ -111,8 +143,13 @@ dotnet user-secrets set "SapB1:Password" "..." --project src/B1Agent.Api
 dotnet user-secrets set "SapB1:AllowUntrustedCertificate" "true" --project src/B1Agent.Api
 ```
 
-Use a dedicated B1 user with read-only authorizations for the agent. Works with SAP B1 on HANA and SQL Server
-(Service Layer v1).
+Use a dedicated B1 user for the agent, authorized to read the master data and documents above and to create
+sales quotations only. Works with SAP B1 on HANA and SQL Server (Service Layer v1). Incoming supply uses a Service
+Layer `$crossjoin` on purchase order lines.
+
+Calculations that need many rows (aging, reorder, daily brief) page through Service Layer up to `SapB1:MaxScanRows`
+(2,000 by default). For companies with more open documents than that, back those methods with a SQL view or a
+Service Layer SQL query instead.
 
 ## API
 
@@ -120,6 +157,10 @@ Use a dedicated B1 user with read-only authorizations for the agent. Works with 
 |---|---|---|
 | `POST` | `/api/chat` | `{ "messages": [{ "role": "user", "content": "..." }] }` → `{ "reply": "...", "toolCalls": [...] }` |
 | `GET` | `/api/tools` | Tool names and descriptions sent to the model |
+| `GET` | `/api/brief` | Daily brief (no LLM involved) |
+| `GET` | `/api/actions/{id}` | A proposal and its status |
+| `POST` | `/api/actions/{id}/confirm` | Creates the proposed quotation in SAP. Called by the user's click, never by the model |
+| `POST` | `/api/actions/{id}/cancel` | Discards a proposal |
 | `GET` | `/api/health` | Data source mode and LLM configuration |
 
 ## Project layout
@@ -129,6 +170,8 @@ src/
   B1Agent.Core/        SAP B1 access, tools and agent. No web or LLM-vendor dependencies.
     SapB1/             ISapB1Client, Service Layer client, OData helpers, mapping
     Demo/              In-memory sample company
+    Insights/          Aging, credit, ATP, reorder, pricing, daily brief (pure calculations + loader)
+    Actions/           Quotation proposals, confirmation store
     Agent/             Tools exposed to the LLM, system prompt, agent
   B1Agent.Api/         ASP.NET Core host, LLM wiring, web chat (wwwroot)
 tests/
@@ -147,10 +190,11 @@ including what the model receives back from each tool.
 
 ## Roadmap
 
-- Write actions with human-in-the-loop confirmation (draft sales order, then "confirm" in the UI)
+- Sales orders from a confirmed quotation, with the same confirmation step
+- Special prices and discount groups in pricing
+- Collection e-mail drafts per customer from the aging report
 - Streaming responses
-- Authentication and per-user B1 authorizations
-- More tools: price lists, delivery status, purchase orders, item availability by date (ATP)
+- Authentication and per-user B1 authorizations; persistent proposal store (Redis/SQL) for multiple instances
 
 ## Author
 

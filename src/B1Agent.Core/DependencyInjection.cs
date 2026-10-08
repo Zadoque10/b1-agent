@@ -1,5 +1,7 @@
 using System.Net;
+using B1Agent.Core.Actions;
 using B1Agent.Core.Agent;
+using B1Agent.Core.Insights;
 using B1Agent.Core.Demo;
 using B1Agent.Core.SapB1;
 using Microsoft.Extensions.Configuration;
@@ -11,6 +13,8 @@ namespace B1Agent.Core;
 
 public static class DependencyInjection
 {
+    private const string SapClientKey = "b1-agent:sap-client";
+
     /// <summary>
     /// Registers the SAP B1 data source (demo or Service Layer, from configuration) and the agent tools.
     /// The <c>IChatClient</c> (the LLM) and <see cref="B1ChatAgent"/> are registered by the host,
@@ -28,7 +32,10 @@ public static class DependencyInjection
 
         services.AddSingleton(TimeProvider.System);
 
-        services.AddSingleton<ISapB1Client>(sp =>
+        services.AddOptions<PolicyOptions>().Bind(configuration.GetSection(PolicyOptions.SectionName));
+
+        // One instance serves both interfaces, so the write path shares the read path's Service Layer session.
+        services.AddKeyedSingleton<object>(SapClientKey, (sp, _) =>
         {
             var options = sp.GetRequiredService<IOptions<SapB1Options>>();
             var time = sp.GetRequiredService<TimeProvider>();
@@ -41,7 +48,12 @@ public static class DependencyInjection
                 options, time,
                 sp.GetRequiredService<ILogger<ServiceLayerClient>>());
         });
+        services.AddSingleton(sp => (ISapB1Client)sp.GetRequiredKeyedService<object>(SapClientKey));
+        services.AddSingleton(sp => (ISapB1Writer)sp.GetRequiredKeyedService<object>(SapClientKey));
 
+        services.AddSingleton<B1Insights>();
+        services.AddSingleton<PendingActionStore>();
+        services.AddSingleton<QuotationService>();
         services.AddSingleton<B1Tools>();
         return services;
     }

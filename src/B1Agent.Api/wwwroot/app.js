@@ -4,12 +4,12 @@
   const $ = (id) => document.getElementById(id);
 
   const PROMPTS = [
-    { tag: "FINANCE", q: "Which customers have overdue invoices?" },
-    { tag: "CREDIT", q: "Is Microchips over its credit limit?" },
-    { tag: "STOCK", q: "Can we ship 50 units of A00001 today?" },
-    { tag: "SALES", q: "Show the open orders for Parameter Technology." },
-    { tag: "STOCK", q: "Which printers do we have available in warehouse 02?" },
-    { tag: "CUSTOMER", q: "Give me a quick account summary for Norm Thompson." }
+    { tag: "COLLECTIONS", q: "Who should I call first today about overdue invoices?" },
+    { tag: "CREDIT", q: "Can we accept a new order of $8,000 from Norm Thompson?" },
+    { tag: "DELIVERY", q: "When can we ship 15 units of A00003?" },
+    { tag: "PURCHASING", q: "What should I reorder this week, and how much?" },
+    { tag: "QUOTATION", q: "Prepare a quotation for Parameter Technology: 2 x A00001 and 20 x A00005." },
+    { tag: "PRICING", q: "What price does Parameter Technology pay for the Rainbow Color Printer 7.5?" }
   ];
 
   const state = { history: [], busy: false, featured: 0, health: null, tools: [] };
@@ -20,7 +20,8 @@
   function inline(s) {
     return s
       .replace(/`([^`]+)`/g, "<code>$1</code>")
-      .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
+      .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
+      .replace(/(^|[\s(])\*([^*\s][^*]*)\*(?=[\s.,;:!?)]|$)/g, "$1<i>$2</i>");
   }
 
   // Small, safe Markdown subset: paragraphs, lists, tables, bold, inline code. Input is escaped first.
@@ -36,8 +37,8 @@
         const cells = (r) => r.trim().replace(/^\||\|$/g, "").split("|").map((c) => inline(c.trim()));
         const body = rows.filter((r) => !/^\s*\|[\s:|-]+\|\s*$/.test(r));
         const [head, ...rest] = body;
-        out.push("<table><thead><tr>" + cells(head).map((c) => `<th>${c}</th>`).join("") + "</tr></thead><tbody>" +
-          rest.map((r) => "<tr>" + cells(r).map((c) => `<td>${c}</td>`).join("") + "</tr>").join("") + "</tbody></table>");
+        out.push("<div class=\"table-wrap\"><table><thead><tr>" + cells(head).map((c) => `<th>${c}</th>`).join("") + "</tr></thead><tbody>" +
+          rest.map((r) => "<tr>" + cells(r).map((c) => `<td>${c}</td>`).join("") + "</tr>").join("") + "</tbody></table></div>");
         continue;
       }
       if (/^\s*([-*]|\d+\.)\s+/.test(line)) {
@@ -59,7 +60,13 @@
   const formatArgs = (json) => {
     try {
       const obj = JSON.parse(json || "{}");
-      return Object.entries(obj).map(([k, v]) => `${k}: ${typeof v === "string" ? `"${v}"` : v}`).join(", ");
+      const show = (v) => {
+        if (typeof v === "string") return `"${v}"`;
+        if (Array.isArray(v) && v.every((x) => x && typeof x === "object" && "itemCode" in x && "quantity" in x))
+          return v.map((x) => `${x.quantity}×${x.itemCode}`).join(" + ");
+        return typeof v === "object" && v !== null ? JSON.stringify(v) : v;
+      };
+      return Object.entries(obj).map(([k, v]) => `${k}: ${show(v)}`).join(", ");
     } catch { return json; }
   };
 
@@ -207,6 +214,133 @@
     $("callNote").textContent = target ? [...new Set(calls.map((c) => c.name))].join(" · ") : "No SAP data was needed for this one.";
   }
 
+
+  // ------------------------------------------------------------ money
+  const money = (v, currency = "USD") => {
+    try { return new Intl.NumberFormat("en-US", { style: "currency", currency, maximumFractionDigits: 0 }).format(v); }
+    catch { return `${currency} ${Math.round(v).toLocaleString("en-US")}`; }
+  };
+  const money2 = (v, currency = "USD") => {
+    try { return new Intl.NumberFormat("en-US", { style: "currency", currency }).format(v); }
+    catch { return `${currency} ${Number(v).toFixed(2)}`; }
+  };
+  const qty = (v) => Number(v).toLocaleString("en-US", { maximumFractionDigits: 2 });
+
+  // ------------------------------------------------------------ daily brief
+  const BUCKETS = [
+    ["notYetDue", "Not yet due", "#d8cbb5"],
+    ["days1To30", "1–30 days", "#c9a27a"],
+    ["days31To60", "31–60 days", "#a07c56"],
+    ["days61To90", "61–90 days", "#7c5e40"],
+    ["over90", "Over 90", "#3a2a1a"]
+  ];
+
+  const listItems = (items, empty) => items.length ? items.join("") : `<li class="none">${empty}</li>`;
+
+  async function loadBrief() {
+    try {
+      const b = await (await fetch("/api/brief")).json();
+      const date = new Date(b.date + "T12:00:00");
+      $("briefDate").textContent = date.toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric" });
+      $("agingOverdue").textContent = money(b.receivablesOverdue);
+      $("agingSub").textContent = `${b.overdueInvoices} overdue invoice${b.overdueInvoices === 1 ? "" : "s"} · ${money(b.receivablesOpen)} open in total`;
+
+      const total = b.receivablesOpen || 1;
+      $("agingBar").innerHTML = BUCKETS.map(([k, , c]) => `<span data-w="${(b.receivablesByAge[k] / total) * 100}" style="background:${c}"></span>`).join("");
+      requestAnimationFrame(() => setTimeout(() => $("agingBar").querySelectorAll("span").forEach((s) => (s.style.width = `${s.dataset.w}%`)), 60));
+      $("agingLegend").innerHTML = BUCKETS.map(([k, label, c]) => `<li><i style="background:${c}"></i>${label}<b>${money(b.receivablesByAge[k])}</b></li>`).join("");
+
+      $("lateCount").textContent = b.lateOrders;
+      $("lateList").innerHTML = listItems(b.lateOrderList.map((o) =>
+        `<li><span>#${o.docNum} · ${esc(o.cardName)}</span><span>${o.daysOverdue}d late</span></li>`), "Nothing is late.");
+
+      $("reorderCount").textContent = b.itemsBelowMinimum;
+      $("reorderList").innerHTML = listItems(b.topReorders.map((r) =>
+        `<li><span>${esc(r.itemCode)} · whs ${esc(r.warehouseCode)}</span><span>buy ${qty(r.suggestedQuantity)}</span></li>`), "Stock is above minimum.");
+
+      $("creditCount").textContent = b.customersOverLimit.length;
+      $("creditList").innerHTML = listItems(b.customersOverLimit.map((c) =>
+        `<li><span>${esc(c.cardName)}</span><span>+${money(c.overBy)}</span></li>`), "Everyone is within limit.");
+    } catch {
+      $("agingSub").textContent = "Could not load the brief.";
+    }
+  }
+
+  document.querySelectorAll("[data-ask]").forEach((b) => b.addEventListener("click", () => ask(b.dataset.ask)));
+
+  // ------------------------------------------------------------ quotation proposal
+  function shipBadge(line) {
+    if (line.canShipNow) return `<span class="ship now">ships now</span>`;
+    if (line.fullQuantityDate) return `<span class="ship later">from ${line.fullQuantityDate}</span>`;
+    return `<span class="ship short">short</span>`;
+  }
+
+  function renderProposal(p) {
+    const el = document.createElement("div");
+    el.className = "proposal";
+    const expires = new Date(p.expiresAt);
+    el.innerHTML = `
+      <div class="proposal-head">
+        <div>
+          <p class="eyebrow gold">SALES QUOTATION · AWAITING YOUR CONFIRMATION</p>
+          <h4>${esc(p.cardName)}</h4>
+          <span class="sub">${esc(p.cardCode)} · valid until ${p.validUntil}</span>
+        </div>
+        <span class="verdict ${esc(p.creditVerdict)}">CREDIT · ${esc(p.creditVerdict).toUpperCase()}</span>
+      </div>
+      <div class="table-wrap"><table>
+        <thead><tr><th>ITEM</th><th class="num">QTY</th><th class="num">UNIT PRICE</th><th class="num">TOTAL</th><th>STOCK</th></tr></thead>
+        <tbody>${p.lines.map((l) => `<tr>
+          <td>${esc(l.itemCode)} · ${esc(l.itemName)}</td>
+          <td class="num">${qty(l.quantity)}</td>
+          <td class="num">${money2(l.unitPrice, l.currency)}</td>
+          <td class="num">${money2(l.lineTotal, l.currency)}</td>
+          <td>${shipBadge(l)}</td></tr>`).join("")}</tbody>
+      </table></div>
+      <div class="proposal-total"><span>TOTAL BEFORE TAX</span><strong>${money2(p.total, p.currency)}</strong></div>
+      ${p.creditReasons.length ? `<ul class="reasons">${p.creditReasons.map((r) => `<li>${esc(r)}</li>`).join("")}</ul>` : ""}
+      <div class="proposal-actions">
+        <button class="btn-green" type="button" data-act="confirm">Create in SAP B1</button>
+        <button class="btn-outline" type="button" data-act="cancel">Discard</button>
+      </div>
+      <p class="proposal-foot">Nothing has been created yet. Prices from price list ${p.lines[0].priceList}. This proposal expires at ${expires.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}.</p>`;
+
+    const buttons = el.querySelectorAll("[data-act]");
+    const finish = (html, err) => {
+      buttons.forEach((b) => b.remove());
+      el.querySelector(".proposal-foot")?.remove();
+      el.classList.add("closed");
+      el.insertAdjacentHTML("beforeend", `<div class="proposal-done${err ? " err" : ""}">${html}</div>`);
+    };
+
+    buttons.forEach((btn) => btn.addEventListener("click", async () => {
+      buttons.forEach((b) => (b.disabled = true));
+      const action = btn.dataset.act;
+      try {
+        const res = await fetch(`/api/actions/${encodeURIComponent(p.actionId)}/${action}`, { method: "POST" });
+        const body = await res.json().catch(() => ({}));
+        if (res.status === 502) {
+          // SAP rejected the document; the proposal is still pending, so the user can retry.
+          el.querySelector(".proposal-done.err")?.remove();
+          el.insertAdjacentHTML("beforeend", `<div class="proposal-done err">${esc(body.detail || "SAP rejected the quotation.")}</div>`);
+          buttons.forEach((b) => (b.disabled = false));
+          return;
+        }
+        if (!res.ok) { finish(esc(body.detail || "This proposal can no longer be used."), true); return; }
+        if (action === "confirm") {
+          finish(`Created in SAP B1 as sales quotation <strong>#${body.docNum}</strong>.`);
+          state.history.push({ role: "assistant", content: `(The user confirmed the proposal. Sales quotation ${body.docNum} was created in SAP B1.)` });
+        } else {
+          finish("Discarded. Nothing was created in SAP.");
+          state.history.push({ role: "assistant", content: "(The user discarded the quotation proposal.)" });
+        }
+      } catch {
+        buttons.forEach((b) => (b.disabled = false));
+      }
+    }));
+    return el;
+  }
+
   // ------------------------------------------------------------ chat
   const thread = $("thread");
   const input = $("input");
@@ -254,6 +388,7 @@
         ? `<div class="calls">${calls.map((c) => `<span class="call"><b>${esc(c.name)}</b> ${esc(formatArgs(c.arguments))}</span>`).join("")}</div>`
         : "";
       const el = addMessage("agent", markdown(body.reply) + chips);
+      (body.pendingActions || []).forEach((p) => el.appendChild(renderProposal(p)));
       el.scrollIntoView({ block: "nearest", behavior: "smooth" });
       highlightTools(calls);
       renderTrace(text, body);
@@ -295,4 +430,5 @@
   onScroll();
   loadHealth();
   loadTools();
+  loadBrief();
 })();

@@ -25,6 +25,21 @@ public class ServiceLayerClientTests
     }
 
     [Fact]
+    public async Task Sends_login_credentials_with_Service_Layer_property_names()
+    {
+        string? login = null;
+        var (client, _) = Create(r =>
+        {
+            if (r.Method == HttpMethod.Post) { login = r.Content!.ReadAsStringAsync().Result; return FakeServiceLayerHandler.Json(LoginOk); }
+            return FakeServiceLayerHandler.Json(OnePartner);
+        });
+
+        await client.SearchBusinessPartnersAsync("norm", 5);
+
+        Assert.Equal("""{"CompanyDB":"SBODEMOUS","UserName":"manager","Password":"secret"}""", login);
+    }
+
+    [Fact]
     public async Task Logs_in_once_and_reuses_the_session()
     {
         var (client, handler) = Create(r => r.Method == HttpMethod.Post
@@ -123,5 +138,76 @@ public class ServiceLayerClientTests
         Assert.Equal(12_200m, doc.OpenBalance);
         Assert.Equal(10, doc.DaysOverdue);
         Assert.Contains("CardCode eq 'C30000'", Uri.UnescapeDataString(handler.Requests.Last().RequestUri!.Query));
+    }
+
+    [Fact]
+    public async Task Scans_follow_nextLink_pages()
+    {
+        var (client, handler) = Create(r =>
+        {
+            if (r.Method == HttpMethod.Post) return FakeServiceLayerHandler.Json(LoginOk);
+            return r.RequestUri!.Query.Contains("skip=100")
+                ? FakeServiceLayerHandler.Json("""{"value":[{"DocEntry":2,"DocNum":2,"CardCode":"C1","CardName":"A","DocDueDate":"2026-10-01","DocTotal":5}]}""")
+                : FakeServiceLayerHandler.Json("""{"value":[{"DocEntry":1,"DocNum":1,"CardCode":"C1","CardName":"A","DocDueDate":"2026-10-01","DocTotal":5}],"odata.nextLink":"Invoices?$skip=100"}""");
+        });
+
+        var invoices = await client.GetAllOpenInvoicesAsync(null);
+
+        Assert.Equal([1, 2], invoices.Select(i => i.DocNum));
+        Assert.Equal("odata.maxpagesize=100", string.Join(",", handler.Requests.Last().Headers.GetValues("Prefer")));
+    }
+
+    [Fact]
+    public async Task Reads_incoming_supply_with_a_crossjoin_on_open_purchase_order_lines()
+    {
+        const string rows = """
+            {"value":[
+              {"PurchaseOrders":{"DocNum":78,"CardName":"Far East","DocDueDate":"2026-10-20"},
+               "PurchaseOrders/DocumentLines":{"DocEntry":5,"ItemCode":"A00001","RemainingOpenQuantity":20,"ShipDate":"2026-10-17","WarehouseCode":"01"}},
+              {"PurchaseOrders":{"DocNum":77,"CardName":"Acme","DocDueDate":"2026-10-12"},
+               "PurchaseOrders/DocumentLines":{"DocEntry":4,"ItemCode":"A00001","RemainingOpenQuantity":40,"ShipDate":"2026-10-13","WarehouseCode":"01"}}
+            ]}
+            """;
+        var (client, handler) = Create(r => r.Method == HttpMethod.Post ? FakeServiceLayerHandler.Json(LoginOk) : FakeServiceLayerHandler.Json(rows));
+
+        var supply = await client.GetIncomingSupplyAsync("A00001");
+
+        Assert.Equal([77, 78], supply.Select(s => s.DocNum));
+        Assert.Equal(new DateOnly(2026, 10, 13), supply[0].ExpectedDate);
+        var url = Uri.UnescapeDataString(handler.Requests.Last().RequestUri!.ToString());
+        Assert.Contains("$crossjoin(PurchaseOrders,PurchaseOrders/DocumentLines)", url);
+        Assert.Contains("PurchaseOrders/DocumentLines/ItemCode eq 'A00001'", url);
+        Assert.Contains("PurchaseOrders/DocumentLines/LineStatus eq 'bost_Open'", url);
+    }
+
+    [Fact]
+    public async Task Late_orders_filter_on_due_date_before_today()
+    {
+        var (client, handler) = Create(r => r.Method == HttpMethod.Post ? FakeServiceLayerHandler.Json(LoginOk) : FakeServiceLayerHandler.Json("""{"value":[]}"""));
+
+        await client.GetLateSalesOrdersAsync(10);
+
+        Assert.Contains("DocDueDate lt '2026-10-08'", Uri.UnescapeDataString(handler.Requests.Last().RequestUri!.Query));
+    }
+
+    [Fact]
+    public async Task Creates_a_sales_quotation_with_the_confirmed_prices()
+    {
+        string? body = null;
+        var (client, handler) = Create(r =>
+        {
+            if (r.RequestUri!.AbsolutePath.EndsWith("/Login")) return FakeServiceLayerHandler.Json(LoginOk);
+            body = r.Content!.ReadAsStringAsync().Result;
+            return FakeServiceLayerHandler.Json("""{"DocEntry":901,"DocNum":2045}""", HttpStatusCode.Created);
+        });
+
+        var created = await client.CreateSalesQuotationAsync(new QuotationDraft(
+            "C20000", new DateOnly(2026, 10, 23), [new QuotationDraftLine("A00001", 3, 450m)], "ref abc"));
+
+        Assert.Equal(2045, created.DocNum);
+        Assert.EndsWith("/Quotations", handler.Requests.Last().RequestUri!.AbsolutePath);
+        // Service Layer property names are case-sensitive.
+        Assert.Contains("\"DocDueDate\":\"2026-10-23\"", body);
+        Assert.Contains("\"DocumentLines\":[{\"ItemCode\":\"A00001\",\"Quantity\":3,\"UnitPrice\":450", body);
     }
 }

@@ -1,4 +1,7 @@
+using System.Text.Json.Serialization;
 using B1Agent.Api.Llm;
+using B1Agent.Core.Actions;
+using B1Agent.Core.Insights;
 using B1Agent.Core;
 using B1Agent.Core.Agent;
 using B1Agent.Core.SapB1;
@@ -10,6 +13,7 @@ var builder = WebApplication.CreateBuilder(args);
 builder.Services.AddB1Agent(builder.Configuration);
 builder.Services.AddLlm(builder.Configuration);
 builder.Services.AddProblemDetails();
+builder.Services.ConfigureHttpJsonOptions(o => o.SerializerOptions.Converters.Add(new JsonStringEnumConverter()));
 
 var app = builder.Build();
 
@@ -49,6 +53,45 @@ api.MapPost("/chat", async (ChatRequest request, IServiceProvider services, Canc
     catch (ArgumentException ex)
     {
         return Results.Problem(ex.Message, statusCode: 400);
+    }
+});
+
+// Deterministic overview: no LLM involved, so it works even before a model is configured.
+api.MapGet("/brief", (B1Insights insights, CancellationToken ct) => insights.GetDailyBriefAsync(ct));
+
+// ---- Human confirmation for proposals the agent prepared. These are the only endpoints that write to SAP,
+// ---- and no LLM tool can call them: a person has to click Confirm in the UI.
+var actions = api.MapGroup("/actions");
+
+actions.MapGet("/{id}", (string id, QuotationService quotations) =>
+    quotations.Get(id) is { } state ? Results.Ok(state) : Results.NotFound());
+
+actions.MapPost("/{id}/confirm", async (string id, QuotationService quotations, CancellationToken ct) =>
+{
+    try
+    {
+        var created = await quotations.ConfirmAsync(id, ct);
+        return Results.Ok(new { status = "Confirmed", created.DocEntry, created.DocNum });
+    }
+    catch (ActionException ex)
+    {
+        return Results.Problem(ex.Message, statusCode: 409);
+    }
+    catch (ServiceLayerException ex)
+    {
+        return Results.Problem(ex.Message, statusCode: 502);
+    }
+});
+
+actions.MapPost("/{id}/cancel", (string id, QuotationService quotations) =>
+{
+    try
+    {
+        return Results.Ok(quotations.Cancel(id));
+    }
+    catch (ActionException ex)
+    {
+        return Results.Problem(ex.Message, statusCode: 409);
     }
 });
 

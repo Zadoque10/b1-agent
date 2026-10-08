@@ -26,6 +26,7 @@
       <span class="brand-sub">· SAP Business One</span>
     </a>
     <nav class="links" aria-label="Sections">
+      <a href="#brief">Brief</a>
       <a href="#assistant">Assistant</a>
       <a href="#trace">Trace</a>
       <a href="#principles">Principles</a>
@@ -72,9 +73,57 @@
     </div>
 
     <div class="stats">
-      <div><p class="eyebrow bronze">READ-ONLY TOOLS</p><p class="stat" data-count="6">0</p></div>
+      <div><p class="eyebrow bronze">TOOLS FOR THE AGENT</p><p class="stat" data-count="14">0</p></div>
       <div><p class="eyebrow bronze">MAX ROWS PER CALL</p><p class="stat" data-count="20">0</p></div>
-      <div><p class="eyebrow bronze">QUERIES WRITTEN BY THE MODEL</p><p class="stat" data-count="0">0</p></div>
+      <div><p class="eyebrow bronze">WRITES WITHOUT YOUR CLICK</p><p class="stat" data-count="0">0</p></div>
+    </div>
+  </div>
+</section>
+
+<!-- Daily brief: deterministic, works without an LLM -->
+<section class="sand brief" id="brief">
+  <div class="container">
+    <div class="brief-head">
+      <div>
+        <p class="eyebrow bronze line">DAILY BRIEF</p>
+        <h2 class="section-title">Today, <em>at a glance</em>.</h2>
+        <p class="muted">Calculated straight from SAP Business One. No language model involved.</p>
+      </div>
+      <p class="brief-date" id="briefDate">—</p>
+    </div>
+
+    <div class="aging card light">
+      <div class="aging-top">
+        <div>
+          <p class="eyebrow bronze">RECEIVABLES OVERDUE</p>
+          <p class="aging-total" id="agingOverdue">—</p>
+          <p class="muted small" id="agingSub">&nbsp;</p>
+        </div>
+        <button class="ask-link" type="button" data-ask="Show me the A/R aging and who I should call first today.">Who to call first <span aria-hidden="true">&rarr;</span></button>
+      </div>
+      <div class="aging-bar" id="agingBar" role="img" aria-label="Receivables by age"></div>
+      <ul class="aging-legend" id="agingLegend"></ul>
+    </div>
+
+    <div class="brief-grid">
+      <article class="b-card">
+        <p class="eyebrow bronze">LATE SALES ORDERS</p>
+        <p class="b-number" id="lateCount">—</p>
+        <ul class="b-list" id="lateList"></ul>
+        <button class="ask-link" type="button" data-ask="Which sales orders are late, and can we ship them now?">Can we ship them? <span aria-hidden="true">&rarr;</span></button>
+      </article>
+      <article class="b-card">
+        <p class="eyebrow bronze">BELOW MINIMUM STOCK</p>
+        <p class="b-number" id="reorderCount">—</p>
+        <ul class="b-list" id="reorderList"></ul>
+        <button class="ask-link" type="button" data-ask="What should I reorder this week, and how much?">What to reorder <span aria-hidden="true">&rarr;</span></button>
+      </article>
+      <article class="b-card dark-card">
+        <p class="eyebrow gold">OVER CREDIT LIMIT</p>
+        <p class="b-number" id="creditCount">—</p>
+        <ul class="b-list" id="creditList"></ul>
+        <button class="ask-link gold" type="button" data-ask="Which customers are over their credit limit, and what do they owe?">See the exposure <span aria-hidden="true">&rarr;</span></button>
+      </article>
     </div>
   </div>
 </section>
@@ -85,7 +134,7 @@
     <div class="conversation">
       <p class="eyebrow bronze line">ASSISTANT</p>
       <h2 class="section-title">The <em>conversation</em>.</h2>
-      <p class="lede">Customers, credit, stock per warehouse, open orders and receivables. Every number comes from SAP Business One, never from the model's imagination.</p>
+      <p class="lede">Collections, credit checks, stock and delivery dates, reorders, prices and quotations. Every number comes from SAP Business One, never from the model's imagination.</p>
 
       <div class="thread" id="thread" aria-live="polite">
         <div class="empty" id="empty">
@@ -170,9 +219,9 @@
     <p class="eyebrow gold line">ARCHITECTURE | DESIGN PRINCIPLES</p>
     <h2 class="section-title light">Built to be <em>trusted</em>.</h2>
     <div class="p-grid">
-      <article><span class="p-num">01</span><h3>Read-only by design</h3><p>No tool creates or changes documents. Writes would need a human confirmation step.</p></article>
+      <article><span class="p-num">01</span><h3>Nothing is written without you</h3><p>The agent can only prepare a quotation. It reaches SAP when a person clicks Confirm, through an endpoint no tool can call.</p></article>
       <article><span class="p-num">02</span><h3>The model never writes queries</h3><p>Tools take plain values. The client builds the OData and escapes every one of them.</p></article>
-      <article><span class="p-num">03</span><h3>Limits outside the model</h3><p>Row caps live in code, not in the prompt, so no instruction can lift them.</p></article>
+      <article><span class="p-num">03</span><h3>Code does the maths</h3><p>Aging, credit, ATP and reorder rules are tested C#. The model receives finished numbers and never does arithmetic.</p></article>
       <article><span class="p-num">04</span><h3>Vendor-neutral core</h3><p>One <code>IChatClient</code> abstraction. OpenAI, Azure or a local model is a setting.</p></article>
     </div>
   </div>

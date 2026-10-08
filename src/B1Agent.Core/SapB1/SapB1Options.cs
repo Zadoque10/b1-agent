@@ -28,4 +28,31 @@ public sealed class SapB1Options
 
     /// <summary>Hard cap on rows returned by any single query, regardless of what the LLM asks for.</summary>
     public int MaxRows { get; set; } = 20;
+
+    /// <summary>
+    /// Cap on rows read for calculations (aging, reorder, daily brief). These rows are summarised in code
+    /// and never sent to the model. For very large companies, back these with a SQL view instead.
+    /// </summary>
+    public int MaxScanRows { get; set; } = 2_000;
+}
+
+/// <summary>Business rules the insights apply. Every company tunes these differently.</summary>
+public sealed class PolicyOptions
+{
+    public const string SectionName = "Policy";
+
+    /// <summary>Send an order to review when the customer has an invoice overdue by more than this.</summary>
+    public int ReviewWhenOverdueDays { get; set; } = 30;
+
+    /// <summary>Block an order when the customer has an invoice overdue by more than this.</summary>
+    public int BlockWhenOverdueDays { get; set; } = 60;
+
+    /// <summary>Price list used when a customer has none (B1's default is list 1).</summary>
+    public int DefaultPriceList { get; set; } = 1;
+
+    /// <summary>How long a quotation proposal waits for confirmation before it expires.</summary>
+    public int ProposalLifetimeMinutes { get; set; } = 30;
+
+    /// <summary>Default validity of a quotation, in days.</summary>
+    public int QuotationValidityDays { get; set; } = 15;
 }

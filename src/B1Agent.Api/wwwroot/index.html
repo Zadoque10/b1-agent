@@ -1,0 +1,190 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>B1 Agent · SAP Business One assistant</title>
+<meta name="description" content="Ask SAP Business One questions in plain language. Read-only LLM agent over the Service Layer.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,500;1,400;1,500&family=Inter:wght@400;500;600&family=Manrope:wght@300;400;500;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="app.css">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%230a0a0a'/%3E%3Cpath d='M16 5 L24 16 L16 27 L8 16 Z' fill='none' stroke='%23e2c58a' stroke-width='1.6'/%3E%3Ccircle cx='16' cy='16' r='2.4' fill='%23e2c58a'/%3E%3C/svg%3E">
+</head>
+<body>
+
+<header class="nav" id="top">
+  <div class="nav-progress" id="progress"></div>
+  <div class="nav-inner">
+    <a class="brand" href="#top" aria-label="B1 Agent home">
+      <svg class="mark" viewBox="0 0 32 32" aria-hidden="true">
+        <path d="M16 3 L25 16 L16 29 L7 16 Z" />
+        <path d="M16 9 L20.5 16 L16 23 L11.5 16 Z" class="inner" />
+        <circle cx="16" cy="16" r="1.8" />
+      </svg>
+      <span class="brand-name">B1&nbsp;AGENT</span>
+      <span class="brand-sub">· SAP Business One</span>
+    </a>
+    <nav class="links" aria-label="Sections">
+      <a href="#assistant">Assistant</a>
+      <a href="#trace">Trace</a>
+      <a href="#principles">Principles</a>
+    </nav>
+    <span class="status-pill" id="statusPill"><span class="dot"></span><span id="statusText">Connecting…</span></span>
+  </div>
+</header>
+
+<!-- Gallery: featured question carousel + prompt strip -->
+<section class="gallery dark" aria-label="Featured questions">
+  <div class="gallery-stage">
+    <div class="glow"></div>
+    <div class="watermark" aria-hidden="true">B1</div>
+    <button class="arrow left" id="prev" aria-label="Previous question">&larr;</button>
+    <div class="featured">
+      <p class="eyebrow gold" id="featuredTag">FINANCE</p>
+      <p class="featured-q" id="featuredQ">Which customers have overdue invoices?</p>
+      <button class="btn-gold" id="featuredAsk">Ask this <span aria-hidden="true">&rarr;</span></button>
+    </div>
+    <button class="arrow right" id="next" aria-label="Next question">&rarr;</button>
+    <span class="counter" id="counter">01 / 06</span>
+  </div>
+  <div class="strip" id="strip" role="list"></div>
+</section>
+
+<!-- Title block -->
+<section class="cream intro">
+  <div class="container">
+    <div class="ref-wrap"><span class="ref" id="refPill">REF · DEMO COMPANY</span></div>
+    <div class="intro-grid">
+      <div>
+        <p class="eyebrow bronze">SAP BUSINESS ONE · AI AGENT</p>
+        <h1 class="reveal-title" id="title">Ask your ERP <em>anything</em>.</h1>
+        <p class="muted small">Service Layer · read-only · .NET 10 · Microsoft.Extensions.AI</p>
+      </div>
+      <div class="price">
+        <p class="eyebrow bronze">LANGUAGE MODEL</p>
+        <p class="price-value" id="modelName">—</p>
+        <div class="chips" id="modeChips">
+          <span class="chip" data-mode="Demo">DEMO DATA</span>
+          <span class="chip" data-mode="ServiceLayer">SERVICE LAYER</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="stats">
+      <div><p class="eyebrow bronze">READ-ONLY TOOLS</p><p class="stat" data-count="6">0</p></div>
+      <div><p class="eyebrow bronze">MAX ROWS PER CALL</p><p class="stat" data-count="20">0</p></div>
+      <div><p class="eyebrow bronze">QUERIES WRITTEN BY THE MODEL</p><p class="stat" data-count="0">0</p></div>
+    </div>
+  </div>
+</section>
+
+<!-- Conversation + console -->
+<section class="cream" id="assistant">
+  <div class="container two-col">
+    <div class="conversation">
+      <p class="eyebrow bronze line">ASSISTANT</p>
+      <h2 class="section-title">The <em>conversation</em>.</h2>
+      <p class="lede">Customers, credit, stock per warehouse, open orders and receivables. Every number comes from SAP Business One, never from the model's imagination.</p>
+
+      <div class="thread" id="thread" aria-live="polite">
+        <div class="empty" id="empty">
+          <p class="serif-note">Start with a question, or pick one from the gallery above.</p>
+        </div>
+      </div>
+
+      <form class="composer" id="form">
+        <label class="sr-only" for="input">Your question</label>
+        <textarea id="input" rows="1" placeholder="e.g. Is Microchips over its credit limit?"></textarea>
+        <button class="btn-bronze" id="send" type="submit">Ask</button>
+      </form>
+      <p class="hint">Enter to send · Shift + Enter for a new line</p>
+    </div>
+
+    <aside class="console" aria-label="Agent console">
+      <p class="eyebrow gold">AGENT CONSOLE</p>
+      <div class="console-head">
+        <svg class="mark small" viewBox="0 0 32 32" aria-hidden="true">
+          <path d="M16 3 L25 16 L16 29 L7 16 Z" /><path d="M16 9 L20.5 16 L16 23 L11.5 16 Z" class="inner" /><circle cx="16" cy="16" r="1.8" />
+        </svg>
+        <span>B1 Agent</span>
+      </div>
+      <p class="eyebrow dim">READ-ONLY · SERVICE LAYER</p>
+
+      <div class="console-box">
+        <div class="row"><span>SAP</span><strong id="sapMode">—</strong></div>
+        <div class="row"><span>LLM</span><strong id="llmState">—</strong></div>
+      </div>
+
+      <button class="btn-green" id="surprise" type="button">Ask a sample question</button>
+      <button class="btn-outline" id="reset" type="button">New conversation</button>
+
+      <div class="console-tools">
+        <p class="console-sub">Tools <em>available</em></p>
+        <ul id="toolList"></ul>
+      </div>
+
+      <div class="setup" id="setup" hidden>
+        <p class="eyebrow gold">SETUP NEEDED</p>
+        <p>No language model configured. Point the API at OpenAI or a local Ollama:</p>
+        <code>dotnet user-secrets set "Llm:Endpoint" "http://localhost:11434/v1"</code>
+      </div>
+    </aside>
+  </div>
+</section>
+
+<!-- Trace -->
+<section class="sand" id="trace">
+  <div class="container narrow">
+    <p class="eyebrow bronze line">HOW IT WORKS</p>
+    <h2 class="section-title">Trace <em>of the last answer</em>.</h2>
+    <p class="muted">What the model asked SAP for, in order, before answering.</p>
+
+    <div class="trace-grid">
+      <div class="card light">
+        <ol class="timeline" id="timeline">
+          <li><span class="t-label">QUESTION</span><span class="t-body">Your question arrives with the conversation so far.</span></li>
+          <li><span class="t-label">MODEL</span><span class="t-body">The model reads six tool descriptions and decides what it needs.</span></li>
+          <li><span class="t-label">TOOL CALL</span><span class="t-body">The API runs the tool: a parameterised, row-capped Service Layer query.</span></li>
+          <li><span class="t-label">ANSWER</span><span class="t-body">The result goes back to the model, which answers from the data only.</span></li>
+        </ol>
+      </div>
+      <div class="card emerald">
+        <span class="tag">THE AGENT CALLED</span>
+        <p class="eyebrow mint">TOOL CALLS · LAST ANSWER</p>
+        <p class="big-number" id="callCount">0</p>
+        <p class="mint-note" id="callNote">Ask something to see the trace.</p>
+        <div class="mini-grid">
+          <div><span>Data source</span><strong id="traceSource">—</strong></div>
+          <div><span>Write access</span><strong>None</strong></div>
+        </div>
+        <a class="btn-mint" href="#assistant">Ask another question</a>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- Principles -->
+<section class="dark principles" id="principles">
+  <div class="container">
+    <p class="eyebrow gold line">ARCHITECTURE | DESIGN PRINCIPLES</p>
+    <h2 class="section-title light">Built to be <em>trusted</em>.</h2>
+    <div class="p-grid">
+      <article><span class="p-num">01</span><h3>Read-only by design</h3><p>No tool creates or changes documents. Writes would need a human confirmation step.</p></article>
+      <article><span class="p-num">02</span><h3>The model never writes queries</h3><p>Tools take plain values. The client builds the OData and escapes every one of them.</p></article>
+      <article><span class="p-num">03</span><h3>Limits outside the model</h3><p>Row caps live in code, not in the prompt, so no instruction can lift them.</p></article>
+      <article><span class="p-num">04</span><h3>Vendor-neutral core</h3><p>One <code>IChatClient</code> abstraction. OpenAI, Azure or a local model is a setting.</p></article>
+    </div>
+  </div>
+</section>
+
+<footer class="footer">
+  <div class="container foot">
+    <span class="brand-name">B1&nbsp;AGENT</span>
+    <span class="dim">Built by Paulo Zadoque · <a href="https://www.linkedin.com/in/paulo-zadoque">LinkedIn</a></span>
+  </div>
+</footer>
+
+<script src="app.js"></script>
+</body>
+</html>

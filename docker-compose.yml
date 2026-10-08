@@ -1,0 +1,23 @@
+# Demo mode + a local model through Ollama, no API keys needed:
+#   docker compose up -d
+#   docker compose exec ollama ollama pull qwen2.5:7b
+#   open http://localhost:8080
+services:
+  api:
+    build: .
+    ports:
+      - "8080:8080"
+    environment:
+      SapB1__Mode: Demo
+      Llm__Endpoint: http://ollama:11434/v1
+      Llm__Model: qwen2.5:7b
+    depends_on:
+      - ollama
+
+  ollama:
+    image: ollama/ollama
+    volumes:
+      - ollama:/root/.ollama
+
+volumes:
+  ollama:

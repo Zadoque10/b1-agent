@@ -14,7 +14,7 @@ namespace B1Agent.Core.SapB1;
 /// handler with a CookieContainer, and this class must be a singleton so the session is reused across requests.
 /// When a session expires (HTTP 401) the client logs in again once and retries the request.
 /// </summary>
-public sealed class ServiceLayerClient : ISapB1Client, ISapB1Writer
+public sealed class ServiceLayerClient : ISapB1Client, ISapB1Writer, IAsyncDisposable
 {
     // Reading is case-insensitive. Writing keeps .NET's PascalCase, because Service Layer property names
     // (CardCode, DocumentLines, CompanyDB...) are case-sensitive.
@@ -35,9 +35,12 @@ public sealed class ServiceLayerClient : ISapB1Client, ISapB1Writer
     // Incremented on every successful login. Lets concurrent requests that all hit a 401 trigger only one re-login.
     private int _sessionVersion;
 
-    public ServiceLayerClient(HttpClient http, IOptions<SapB1Options> options, TimeProvider time, ILogger<ServiceLayerClient> logger)
+    private readonly bool _ownsHttpClient;
+
+    public ServiceLayerClient(HttpClient http, IOptions<SapB1Options> options, TimeProvider time, ILogger<ServiceLayerClient> logger, bool ownsHttpClient = false)
     {
         _http = http;
+        _ownsHttpClient = ownsHttpClient;
         _options = options.Value;
         _time = time;
         _logger = logger;
@@ -205,6 +208,33 @@ public sealed class ServiceLayerClient : ISapB1Client, ISapB1Writer
     }
 
     private DateOnly Today() => DateOnly.FromDateTime(_time.GetLocalNow().DateTime);
+
+    // ---------------------------------------------------------------- connection lifecycle
+
+    /// <summary>Logs in and reads one business partner, proving the credentials and read authorizations work.</summary>
+    public async Task TestConnectionAsync(CancellationToken ct = default)
+    {
+        await RenewSessionAsync(Volatile.Read(ref _sessionVersion), ct);
+        await GetAsync<SlCollection<SlBusinessPartner>>("BusinessPartners?$select=CardCode&$top=1", ct);
+    }
+
+    /// <summary>Ends the Service Layer session (frees the B1 license) and releases the HTTP connection.</summary>
+    public async ValueTask DisposeAsync()
+    {
+        if (Volatile.Read(ref _sessionVersion) > 0)
+        {
+            try
+            {
+                using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+                using var _ = await _http.PostAsync("Logout", content: null, cts.Token);
+            }
+            catch (Exception ex) when (ex is HttpRequestException or OperationCanceledException)
+            {
+                _logger.LogDebug(ex, "Service Layer logout failed; the session will time out on its own");
+            }
+        }
+        if (_ownsHttpClient) _http.Dispose();
+    }
 
     private int Clamp(int top) => Math.Clamp(top, 1, _options.MaxRows);
 

@@ -20,7 +20,7 @@ public sealed record AgentReply(string Reply, IReadOnlyList<ToolCallInfo> ToolCa
 /// it runs the tool-calling loop (model asks for a tool, we run it, the result goes back to the model)
 /// until the model produces a final answer.
 /// </summary>
-public sealed class B1ChatAgent(IChatClient chatClient, B1Tools tools, PendingActionStore actions)
+public sealed class B1ChatAgent(IChatClient chatClient, B1Tools tools, QuotationService quotations)
 {
     public const int MaxHistoryTurns = 20;
     public const int MaxMessageLength = 4_000;
@@ -55,7 +55,7 @@ public sealed class B1ChatAgent(IChatClient chatClient, B1Tools tools, PendingAc
             .Where(r => quotationCalls.Contains(r.CallId))
             .Select(r => ReadActionId(r.Result))
             .OfType<string>()
-            .Select(id => actions.Get(id))
+            .Select(id => quotations.Get(id))
             .Where(state => state is { Status: ActionStatus.Pending })
             .Select(state => state!.Proposal)
             .ToList();

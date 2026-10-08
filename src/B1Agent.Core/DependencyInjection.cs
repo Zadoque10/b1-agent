@@ -1,11 +1,13 @@
 using System.Net;
 using B1Agent.Core.Actions;
 using B1Agent.Core.Agent;
+using B1Agent.Core.Connections;
 using B1Agent.Core.Insights;
 using B1Agent.Core.Demo;
 using B1Agent.Core.SapB1;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
@@ -34,7 +36,8 @@ public static class DependencyInjection
 
         services.AddOptions<PolicyOptions>().Bind(configuration.GetSection(PolicyOptions.SectionName));
 
-        // One instance serves both interfaces, so the write path shares the read path's Service Layer session.
+        // The server's default company: one long-lived client that serves both interfaces, so the write path
+        // shares the read path's Service Layer session.
         services.AddKeyedSingleton<object>(SapClientKey, (sp, _) =>
         {
             var options = sp.GetRequiredService<IOptions<SapB1Options>>();
@@ -48,13 +51,34 @@ public static class DependencyInjection
                 options, time,
                 sp.GetRequiredService<ILogger<ServiceLayerClient>>());
         });
-        services.AddSingleton(sp => (ISapB1Client)sp.GetRequiredKeyedService<object>(SapClientKey));
-        services.AddSingleton(sp => (ISapB1Writer)sp.GetRequiredKeyedService<object>(SapClientKey));
 
-        services.AddSingleton<B1Insights>();
+        // Customer connections, one per browser session.
+        services.AddOptions<ConnectionOptions>().Bind(configuration.GetSection(ConnectionOptions.SectionName));
+        services.AddSingleton<ServiceLayerConnections>();
+        services.TryAddScoped<ISapSessionKey, NoSessionKey>();
+
+        // Per request: the session's own Service Layer if it connected one, else the default company.
+        services.AddScoped(sp =>
+        {
+            var connection = sp.GetRequiredService<ServiceLayerConnections>().Get(sp.GetRequiredService<ISapSessionKey>().Current);
+            if (connection is { } c)
+                return new SapDataSource("conn:" + c.Info.Id, "Customer", $"{c.Info.CompanyDB} on {c.Info.Host}",
+                    c.Client, c.Client, c.Info.WritesAllowed, c.Info);
+
+            var options = sp.GetRequiredService<IOptions<SapB1Options>>().Value;
+            var client = sp.GetRequiredKeyedService<object>(SapClientKey);
+            return options.Mode == SapB1Mode.Demo
+                ? new SapDataSource("demo", "Demo", "Demo company", (ISapB1Client)client, (ISapB1Writer)client, true, null)
+                : new SapDataSource("default", "ServiceLayer", options.CompanyDB ?? "Service Layer",
+                    (ISapB1Client)client, (ISapB1Writer)client, options.AllowWrites, null);
+        });
+        services.AddScoped(sp => sp.GetRequiredService<SapDataSource>().Reader);
+        services.AddScoped(sp => sp.GetRequiredService<SapDataSource>().Writer);
+
+        services.AddScoped<B1Insights>();
         services.AddSingleton<PendingActionStore>();
-        services.AddSingleton<QuotationService>();
-        services.AddSingleton<B1Tools>();
+        services.AddScoped<QuotationService>();
+        services.AddScoped<B1Tools>();
         return services;
     }
 

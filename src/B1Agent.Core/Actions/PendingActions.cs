@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using B1Agent.Core.Connections;
 using B1Agent.Core.Insights;
 using B1Agent.Core.SapB1;
 using Microsoft.Extensions.Options;
@@ -31,11 +32,20 @@ public sealed record QuotationProposal(
     string Currency,
     string CreditVerdict,
     IReadOnlyList<string> CreditReasons,
-    DateTimeOffset ExpiresAt);
+    DateTimeOffset ExpiresAt,
+    string Target,
+    bool WritesAllowed);
 
 public enum ActionStatus { Pending, Confirmed, Cancelled, Expired }
 
-public sealed record ActionState(QuotationProposal Proposal, ActionStatus Status, CreatedDocument? Created);
+public sealed record ActionState(QuotationProposal Proposal, ActionStatus Status, CreatedDocument? Created)
+{
+    /// <summary>The browser session that prepared it. Only that session can confirm or cancel it.</summary>
+    internal string Owner { get; init; } = "";
+
+    /// <summary>The SAP company it was priced against. It can only be created in that same company.</summary>
+    internal string SourceId { get; init; } = "";
+}
 
 public sealed class ActionException(string message) : Exception(message);
 
@@ -48,15 +58,16 @@ public sealed class PendingActionStore(TimeProvider time)
     private readonly ConcurrentDictionary<string, ActionState> _actions = new();
     private readonly Lock _gate = new();
 
-    public void Add(QuotationProposal proposal)
+    public void Add(QuotationProposal proposal, string owner, string sourceId)
     {
         PurgeExpired();
-        _actions[proposal.ActionId] = new ActionState(proposal, ActionStatus.Pending, null);
+        _actions[proposal.ActionId] = new ActionState(proposal, ActionStatus.Pending, null) { Owner = owner, SourceId = sourceId };
     }
 
-    public ActionState? Get(string actionId)
+    /// <returns>The proposal, or null when it does not exist or belongs to another session.</returns>
+    public ActionState? Get(string actionId, string owner)
     {
-        if (!_actions.TryGetValue(actionId, out var state)) return null;
+        if (!_actions.TryGetValue(actionId, out var state) || state.Owner != owner) return null;
         return state.Status == ActionStatus.Pending && state.Proposal.ExpiresAt <= time.GetUtcNow()
             ? state with { Status = ActionStatus.Expired }
             : state;
@@ -66,11 +77,13 @@ public sealed class PendingActionStore(TimeProvider time)
     /// Moves a pending proposal to "in progress" exactly once, so a double click cannot create two quotations.
     /// The caller must then call <see cref="Complete"/> or <see cref="Release"/>.
     /// </summary>
-    public QuotationProposal Claim(string actionId)
+    public QuotationProposal Claim(string actionId, string owner, string sourceId)
     {
         lock (_gate)
         {
-            var state = Get(actionId) ?? throw new ActionException("This proposal does not exist. Ask the assistant to prepare it again.");
+            var state = Get(actionId, owner) ?? throw new ActionException("This proposal does not exist. Ask the assistant to prepare it again.");
+            if (state.SourceId != sourceId)
+                throw new ActionException("This proposal was prepared against a different SAP company. Ask the assistant to prepare it again.");
             if (state.Status != ActionStatus.Pending)
                 throw new ActionException($"This proposal is already {state.Status.ToString().ToLowerInvariant()}.");
 
@@ -86,11 +99,11 @@ public sealed class PendingActionStore(TimeProvider time)
     public void Release(string actionId) =>
         _actions.AddOrUpdate(actionId, _ => throw new ActionException("Unknown proposal."), (_, s) => s with { Status = ActionStatus.Pending });
 
-    public ActionState Cancel(string actionId)
+    public ActionState Cancel(string actionId, string owner)
     {
         lock (_gate)
         {
-            var state = Get(actionId) ?? throw new ActionException("This proposal does not exist.");
+            var state = Get(actionId, owner) ?? throw new ActionException("This proposal does not exist.");
             if (state.Status != ActionStatus.Pending)
                 throw new ActionException($"This proposal is already {state.Status.ToString().ToLowerInvariant()}.");
             return _actions[actionId] = state with { Status = ActionStatus.Cancelled };
@@ -109,14 +122,16 @@ public sealed record QuotationLineRequest(string ItemCode, decimal Quantity);
 
 /// <summary>Builds quotation proposals (read-only) and, on human confirmation, creates them in SAP.</summary>
 public sealed class QuotationService(
-    ISapB1Client sap,
-    ISapB1Writer writer,
+    SapDataSource source,
     B1Insights insights,
     PendingActionStore store,
+    ISapSessionKey session,
     IOptions<PolicyOptions> policy,
     TimeProvider time)
 {
     public const int MaxLines = 20;
+
+    private string Owner => session.Current ?? "default";
 
     public async Task<QuotationProposal> PrepareAsync(string cardCode, IReadOnlyList<QuotationLineRequest> requested, CancellationToken ct = default)
     {
@@ -124,7 +139,7 @@ public sealed class QuotationService(
         if (requested.Count > MaxLines) throw new ActionException($"A quotation can have at most {MaxLines} lines here.");
         if (requested.Any(l => l.Quantity <= 0)) throw new ActionException("Quantities must be greater than zero.");
 
-        var bp = await sap.GetBusinessPartnerAsync(cardCode, ct)
+        var bp = await source.Reader.GetBusinessPartnerAsync(cardCode, ct)
                  ?? throw new ActionException($"No business partner with code '{cardCode}'.");
         if (bp.Type == "Supplier")
             throw new ActionException($"{bp.CardName} is a supplier. Sales quotations are for customers and leads.");
@@ -151,16 +166,21 @@ public sealed class QuotationService(
             insights.Today.AddDays(policy.Value.QuotationValidityDays),
             lines, total, lines[0].Currency,
             credit?.Verdict ?? "Unknown", credit?.Reasons ?? [],
-            time.GetUtcNow().AddMinutes(policy.Value.ProposalLifetimeMinutes));
+            time.GetUtcNow().AddMinutes(policy.Value.ProposalLifetimeMinutes),
+            source.Label,
+            source.WritesAllowed);
 
-        store.Add(proposal);
+        store.Add(proposal, Owner, source.Id);
         return proposal;
     }
 
     /// <summary>Called by the API when a person clicks Confirm. Never exposed as an LLM tool.</summary>
     public async Task<CreatedDocument> ConfirmAsync(string actionId, CancellationToken ct = default)
     {
-        var proposal = store.Claim(actionId);
+        if (!source.WritesAllowed)
+            throw new ActionException($"This connection to {source.Label} is read-only. Reconnect with \"Allow creating quotations\" ticked to create it.");
+
+        var proposal = store.Claim(actionId, Owner, source.Id);
         try
         {
             var draft = new QuotationDraft(
@@ -169,7 +189,7 @@ public sealed class QuotationService(
                 proposal.Lines.Select(l => new QuotationDraftLine(l.ItemCode, l.Quantity, l.UnitPrice)).ToList(),
                 $"Prepared by B1 Agent and confirmed by a user (ref {proposal.ActionId}).");
 
-            var created = await writer.CreateSalesQuotationAsync(draft, ct);
+            var created = await source.Writer.CreateSalesQuotationAsync(draft, ct);
             store.Complete(actionId, created);
             return created;
         }
@@ -180,7 +200,7 @@ public sealed class QuotationService(
         }
     }
 
-    public ActionState Cancel(string actionId) => store.Cancel(actionId);
+    public ActionState Cancel(string actionId) => store.Cancel(actionId, Owner);
 
-    public ActionState? Get(string actionId) => store.Get(actionId);
+    public ActionState? Get(string actionId) => store.Get(actionId, Owner);
 }

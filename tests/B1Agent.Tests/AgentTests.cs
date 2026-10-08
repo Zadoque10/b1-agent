@@ -18,7 +18,7 @@ public class AgentTests
     private static B1ChatAgent Agent(IChatClient llm, Demo? demo = null)
     {
         demo ??= new Demo();
-        return new B1ChatAgent(WithToolLoop(llm), demo.Tools, demo.Store);
+        return new B1ChatAgent(WithToolLoop(llm), demo.Tools, demo.Quotations);
     }
 
     [Fact]

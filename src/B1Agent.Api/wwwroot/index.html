@@ -162,8 +162,10 @@
 
       <div class="console-box">
         <div class="row"><span>SAP</span><strong id="sapMode">—</strong></div>
+        <div class="row"><span>WRITES</span><strong id="sapWrites">—</strong></div>
         <div class="row"><span>LLM</span><strong id="llmState">—</strong></div>
       </div>
+      <button class="btn-gold-outline" id="openConnect" type="button">Connect your Service Layer</button>
 
       <button class="btn-green" id="surprise" type="button">Ask a sample question</button>
       <button class="btn-outline" id="reset" type="button">New conversation</button>
@@ -233,6 +235,49 @@
     <span class="dim">Built by Paulo Zadoque · <a href="https://www.linkedin.com/in/paulo-zadoque">LinkedIn</a></span>
   </div>
 </footer>
+
+<!-- Connect drawer -->
+<div class="drawer-backdrop" id="drawerBackdrop" hidden></div>
+<aside class="drawer" id="drawer" aria-hidden="true" aria-labelledby="drawerTitle" role="dialog">
+  <button class="drawer-close" id="closeConnect" type="button" aria-label="Close">&times;</button>
+  <p class="eyebrow gold">DATA SOURCE</p>
+  <h3 class="drawer-title" id="drawerTitle">Your <em>Service Layer</em>.</h3>
+  <p class="drawer-lede">Point the agent at a real SAP Business One company. Everything on this page, the brief included, then reads from it.</p>
+
+  <div class="connected" id="connectedBox" hidden>
+    <p class="eyebrow mint">CONNECTED</p>
+    <p class="connected-label" id="connectedLabel">—</p>
+    <p class="connected-sub" id="connectedSub">—</p>
+    <button class="btn-outline" id="disconnect" type="button">Disconnect and go back to demo data</button>
+  </div>
+
+  <form id="connectForm" autocomplete="off">
+    <label>Service Layer address
+      <input name="baseUrl" required placeholder="https://b1.company.com:50000/b1s/v1" inputmode="url" spellcheck="false">
+    </label>
+    <label>Company database
+      <input name="companyDB" required placeholder="SBODEMOUS" spellcheck="false">
+    </label>
+    <div class="two">
+      <label>User
+        <input name="userName" required placeholder="manager" spellcheck="false" autocomplete="off">
+      </label>
+      <label>Password
+        <input name="password" required type="password" autocomplete="new-password">
+      </label>
+    </div>
+    <label class="check"><input type="checkbox" name="allowUntrustedCertificate"><span>Accept self-signed certificate <small>(test servers)</small></span></label>
+    <label class="check"><input type="checkbox" name="allowWrites"><span>Allow creating sales quotations <small>(writes to this company, only after you click Confirm)</small></span></label>
+    <p class="form-error" id="connectError" role="alert" hidden></p>
+    <button class="btn-green" id="connectSubmit" type="submit">Test and connect</button>
+  </form>
+
+  <ul class="drawer-notes">
+    <li>Credentials stay in this server's memory for your browser session only. They are never stored, logged or sent back to the page, and the session is logged out after 30 minutes idle.</li>
+    <li>Read-only unless you tick the option above. Use a test company and a B1 user with limited authorizations.</li>
+    <li>The address must be reachable from the internet over HTTPS. Private and VPN addresses are refused.</li>
+  </ul>
+</aside>
 
 <script src="app.js"></script>
 </body>

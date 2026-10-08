@@ -131,7 +131,23 @@ The demo company is modelled on the SAP B1 US demo database (customers such as N
 Microchips, items A00001-A00005). Document dates are relative to today, so there are always current,
 due-soon and overdue documents to ask about.
 
-## Connecting to a real SAP Business One
+## Trying it against your own Service Layer (from the browser)
+
+Click **Connect your Service Layer** in the agent console and enter the address, company database, user and password.
+The server logs in, reads one business partner to prove access, and from then on everything on the page (chat,
+daily brief, quotations) reads from that company, for that browser session only.
+
+- Credentials live only in server memory, inside that session's Service Layer client. They are never stored, logged
+  or returned to the page. The B1 session is logged out on disconnect or after `Connections:IdleMinutes` idle.
+- **Read-only by default.** Quotations can be created only if "Allow creating sales quotations" was ticked, and still
+  only after the user clicks Confirm on the proposal. A proposal is bound to the browser session and to the company
+  it was priced against.
+- **SSRF protection for public deployments.** Only `https` Service Layer roots are accepted; every outgoing socket
+  is checked at connect time and private, loopback, link-local and CGNAT addresses are refused (set
+  `Connections:AllowPrivateNetworks` to `true` only on a server inside your own network). Redirects are not followed.
+- Chat and connection attempts are rate limited per visitor (`RateLimits` section).
+
+## Connecting to a real SAP Business One (server default)
 
 ```bash
 dotnet user-secrets set "SapB1:Mode" "ServiceLayer" --project src/B1Agent.Api

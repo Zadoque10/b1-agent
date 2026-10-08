@@ -3,6 +3,7 @@ using System.Net.Http.Json;
 using System.Text.Json;
 using B1Agent.Core.Actions;
 using B1Agent.Core.Agent;
+using B1Agent.Core.Connections;
 using B1Agent.Core.SapB1;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.AspNetCore.TestHost;
@@ -29,7 +30,7 @@ public class QuotationTests
         Assert.False(proposal.Lines[1].CanShipNow);           // only 0 available, 20 arriving
         Assert.NotNull(proposal.Lines[1].FullQuantityDate);
         Assert.Empty(demo.Sap.CreatedQuotations);
-        Assert.Equal(ActionStatus.Pending, demo.Store.Get(proposal.ActionId)!.Status);
+        Assert.Equal(ActionStatus.Pending, demo.Quotations.Get(proposal.ActionId)!.Status);
     }
 
     [Fact]
@@ -97,7 +98,7 @@ public class QuotationTests
             }),
             ScriptedChatClient.Text("Your quotation for Norm Thompson is ready for review: USD 2,250.00."));
 
-        var agent = new B1ChatAgent(new ChatClientBuilder(llm).UseFunctionInvocation().Build(), demo.Tools, demo.Store);
+        var agent = new B1ChatAgent(new ChatClientBuilder(llm).UseFunctionInvocation().Build(), demo.Tools, demo.Quotations);
         var reply = await agent.AskAsync([new ChatTurn("user", "Quote 5 A00001 for Norm Thompson")]);
 
         var proposal = Assert.Single(reply.PendingActions);
@@ -107,19 +108,76 @@ public class QuotationTests
     }
 
     [Fact]
-    public async Task Confirm_endpoint_creates_the_quotation_and_rejects_a_second_click()
+    public async Task Another_browser_session_cannot_see_or_confirm_a_proposal()
     {
-        await using var app = new WebApplicationFactory<Program>();
-        var quotations = app.Services.GetRequiredService<QuotationService>();
-        var proposal = await quotations.PrepareAsync("C42000", [new("C00007", 10)]);
-        var http = app.CreateClient();
+        var demo = new Demo();
+        var proposal = await demo.Quotations.PrepareAsync("C20000", [new("A00001", 1)]);
+        var intruder = demo.As("browser-2");
 
-        var first = await http.PostAsync($"/api/actions/{proposal.ActionId}/confirm", null);
-        var second = await http.PostAsync($"/api/actions/{proposal.ActionId}/confirm", null);
+        Assert.Null(intruder.Get(proposal.ActionId));
+        await Assert.ThrowsAsync<ActionException>(() => intruder.ConfirmAsync(proposal.ActionId));
+        Assert.Empty(demo.Sap.CreatedQuotations);
+    }
 
+    [Fact]
+    public async Task A_proposal_priced_against_one_company_cannot_be_created_in_another()
+    {
+        var demo = new Demo();
+        var proposal = await demo.Quotations.PrepareAsync("C20000", [new("A00001", 1)]);
+
+        var ex = await Assert.ThrowsAsync<ActionException>(() => demo.As("browser-1", sourceId: "conn:other").ConfirmAsync(proposal.ActionId));
+        Assert.Contains("different SAP company", ex.Message);
+    }
+
+    [Fact]
+    public async Task A_read_only_connection_prepares_proposals_but_refuses_to_create_them()
+    {
+        var demo = new Demo(writesAllowed: false);
+        var proposal = await demo.Quotations.PrepareAsync("C20000", [new("A00001", 1)]);
+
+        Assert.False(proposal.WritesAllowed);
+        var ex = await Assert.ThrowsAsync<ActionException>(() => demo.Quotations.ConfirmAsync(proposal.ActionId));
+        Assert.Contains("read-only", ex.Message);
+        Assert.Equal(ActionStatus.Pending, demo.Quotations.Get(proposal.ActionId)!.Status);
+    }
+
+    private static WebApplicationFactory<Program> AppWith(IChatClient llm) =>
+        new WebApplicationFactory<Program>().WithWebHostBuilder(b => b.ConfigureTestServices(s =>
+        {
+            s.AddChatClient(llm).UseFunctionInvocation();
+            s.AddScoped<B1ChatAgent>();
+        }));
+
+    // The session cookie is Secure, so the test client talks https.
+    private static HttpClient Browser(WebApplicationFactory<Program> app) =>
+        app.CreateClient(new WebApplicationFactoryClientOptions { BaseAddress = new Uri("https://localhost") });
+
+    private static ScriptedChatClient QuoteFor(string card) => new(
+        ScriptedChatClient.ToolCall(B1Tools.PrepareQuotationTool, new()
+        {
+            ["cardCode"] = card,
+            ["lines"] = new[] { new { itemCode = "C00007", quantity = 10 } }
+        }),
+        ScriptedChatClient.Text("Ready for your review."));
+
+    [Fact]
+    public async Task Confirm_endpoint_creates_the_quotation_once_and_only_for_the_session_that_asked()
+    {
+        await using var app = AppWith(QuoteFor("C42000"));
+        var browser = Browser(app);
+        var other = Browser(app);
+
+        var chat = await browser.PostAsJsonAsync("/api/chat", new { messages = new[] { new { role = "user", content = "Quote 10 C00007 for Mashina" } } });
+        var reply = await chat.Content.ReadFromJsonAsync<JsonElement>();
+        var id = reply.GetProperty("pendingActions")[0].GetProperty("actionId").GetString();
+
+        var stranger = await other.PostAsync($"/api/actions/{id}/confirm", null);
+        var first = await browser.PostAsync($"/api/actions/{id}/confirm", null);
+        var second = await browser.PostAsync($"/api/actions/{id}/confirm", null);
+
+        Assert.Equal(HttpStatusCode.Conflict, stranger.StatusCode);
         first.EnsureSuccessStatusCode();
-        var body = await first.Content.ReadFromJsonAsync<JsonElement>();
-        Assert.True(body.GetProperty("docNum").GetInt32() > 2000);
+        Assert.True((await first.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("docNum").GetInt32() > 2000);
         Assert.Equal(HttpStatusCode.Conflict, second.StatusCode);
     }
 

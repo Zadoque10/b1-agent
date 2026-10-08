@@ -166,21 +166,106 @@
     try {
       const h = await (await fetch("/api/health")).json();
       state.health = h;
-      const source = h.sapMode === "Demo" ? "Demo data" : "Service Layer";
+      const source = h.sapMode === "Demo" ? "Demo data" : h.sapLabel;
       $("statusText").textContent = h.llmConfigured ? `${source} · ${h.model}` : `${source} · no LLM`;
+      pill.classList.remove("ok", "warn", "customer");
       pill.classList.add(h.llmConfigured ? "ok" : "warn");
+      if (h.sapMode === "Customer") pill.classList.add("customer");
       $("sapMode").textContent = source;
       $("llmState").textContent = h.llmConfigured ? h.model : "Not configured";
       $("modelName").textContent = h.llmConfigured ? h.model : "Not configured";
       $("traceSource").textContent = source;
-      $("refPill").textContent = h.sapMode === "Demo" ? "REF · DEMO COMPANY" : "REF · SERVICE LAYER";
-      document.querySelectorAll("#modeChips .chip").forEach((c) => c.classList.toggle("on", c.dataset.mode === h.sapMode));
+      $("refPill").textContent = h.sapMode === "Demo" ? "REF · DEMO COMPANY" : `REF · ${h.sapLabel.split(" on ")[0]}`.toUpperCase();
+      document.querySelectorAll("#modeChips .chip").forEach((c) =>
+        c.classList.toggle("on", c.dataset.mode === (h.sapMode === "Demo" ? "Demo" : "ServiceLayer")));
       $("setup").hidden = h.llmConfigured;
     } catch {
       $("statusText").textContent = "API unreachable";
       pill.classList.add("warn");
     }
   }
+
+  // ------------------------------------------------------------ connection drawer
+  const drawer = $("drawer");
+  const backdrop = $("drawerBackdrop");
+  const form = $("connectForm");
+
+  function openDrawer() {
+    backdrop.hidden = false;
+    drawer.classList.add("open");
+    drawer.setAttribute("aria-hidden", "false");
+    setTimeout(() => (form.hidden ? $("disconnect") : form.elements.baseUrl).focus(), 300);
+  }
+  function closeDrawer() {
+    drawer.classList.remove("open");
+    drawer.setAttribute("aria-hidden", "true");
+    backdrop.hidden = true;
+  }
+  $("openConnect").addEventListener("click", openDrawer);
+  $("closeConnect").addEventListener("click", closeDrawer);
+  backdrop.addEventListener("click", closeDrawer);
+  addEventListener("keydown", (e) => { if (e.key === "Escape" && drawer.classList.contains("open")) closeDrawer(); });
+
+  function showConnection(c) {
+    const customer = c.kind === "Customer";
+    $("connectedBox").hidden = !customer;
+    form.hidden = customer;
+    $("openConnect").hidden = !c.connectionsEnabled && !customer;
+    $("openConnect").textContent = customer ? "Change data source" : "Connect your Service Layer";
+    $("sapWrites").textContent = c.writesAllowed ? (c.kind === "Demo" ? "Demo only" : "After you confirm") : "Read-only";
+    if (customer) {
+      $("connectedLabel").textContent = c.companyDB;
+      $("connectedSub").textContent = `${c.host} · ${c.writesAllowed ? "quotations allowed after confirmation" : "read-only"}`;
+    }
+  }
+
+  async function loadConnection() {
+    try { showConnection(await (await fetch("/api/connection")).json()); } catch { /* keep defaults */ }
+  }
+
+  async function dataSourceChanged() {
+    resetConversation();
+    await Promise.all([loadHealth(), loadConnection(), loadBrief()]);
+  }
+
+  form.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const err = $("connectError");
+    const submit = $("connectSubmit");
+    err.hidden = true;
+    submit.disabled = true;
+    submit.textContent = "Testing the connection…";
+    const f = form.elements;
+    try {
+      const res = await fetch("/api/connection", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          baseUrl: f.baseUrl.value, companyDB: f.companyDB.value, userName: f.userName.value, password: f.password.value,
+          allowUntrustedCertificate: f.allowUntrustedCertificate.checked, allowWrites: f.allowWrites.checked
+        })
+      });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        err.textContent = res.status === 429 ? "Too many attempts. Wait a minute and try again." : (body.detail || "Could not connect.");
+        err.hidden = false;
+        return;
+      }
+      f.password.value = "";
+      await dataSourceChanged();
+    } catch {
+      err.textContent = "Could not reach this server.";
+      err.hidden = false;
+    } finally {
+      submit.disabled = false;
+      submit.textContent = "Test and connect";
+    }
+  });
+
+  $("disconnect").addEventListener("click", async () => {
+    await fetch("/api/connection", { method: "DELETE" }).catch(() => {});
+    await dataSourceChanged();
+  });
 
   async function loadTools() {
     try {
@@ -299,8 +384,9 @@
       </table></div>
       <div class="proposal-total"><span>TOTAL BEFORE TAX</span><strong>${money2(p.total, p.currency)}</strong></div>
       ${p.creditReasons.length ? `<ul class="reasons">${p.creditReasons.map((r) => `<li>${esc(r)}</li>`).join("")}</ul>` : ""}
+      <p class="proposal-target">${p.writesAllowed ? "Will be created in" : "Read-only connection to"} <b>${esc(p.target)}</b>${p.writesAllowed ? "" : ". Reconnect with “Allow creating sales quotations” to create it."}</p>
       <div class="proposal-actions">
-        <button class="btn-green" type="button" data-act="confirm">Create in SAP B1</button>
+        <button class="btn-green" type="button" data-act="confirm"${p.writesAllowed ? "" : " disabled"}>Create in SAP B1</button>
         <button class="btn-outline" type="button" data-act="cancel">Discard</button>
       </div>
       <p class="proposal-foot">Nothing has been created yet. Prices from price list ${p.lines[0].priceList}. This proposal expires at ${expires.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}.</p>`;
@@ -418,17 +504,19 @@
   input.addEventListener("input", () => { input.style.height = "auto"; input.style.height = `${input.scrollHeight}px`; });
 
   $("surprise").addEventListener("click", () => ask(PROMPTS[Math.floor(Math.random() * PROMPTS.length)].q));
-  $("reset").addEventListener("click", () => {
+  function resetConversation() {
     state.history = [];
     thread.innerHTML = `<div class="empty" id="empty"><p class="serif-note">Start with a question, or pick one from the gallery above.</p></div>`;
     highlightTools([]);
-  });
+  }
+  $("reset").addEventListener("click", resetConversation);
 
   // ------------------------------------------------------------ boot
   revealTitle($("title"));
   setFeatured(0);
   onScroll();
   loadHealth();
+  loadConnection();
   loadTools();
   loadBrief();
 })();

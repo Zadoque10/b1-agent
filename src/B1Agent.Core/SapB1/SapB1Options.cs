@@ -34,6 +34,9 @@ public sealed class SapB1Options
     /// and never sent to the model. For very large companies, back these with a SQL view instead.
     /// </summary>
     public int MaxScanRows { get; set; } = 2_000;
+
+    /// <summary>Whether confirmed quotations may be created in the configured company.</summary>
+    public bool AllowWrites { get; set; } = true;
 }
 
 /// <summary>Business rules the insights apply. Every company tunes these differently.</summary>

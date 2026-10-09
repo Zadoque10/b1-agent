@@ -187,6 +187,6 @@ public class QuotationTests
         await using var app = new WebApplicationFactory<Program>();
         var brief = await app.CreateClient().GetFromJsonAsync<JsonElement>("/api/brief");
 
-        Assert.Equal(4, brief.GetProperty("overdueInvoices").GetInt32());
+        Assert.Equal(9, brief.GetProperty("overdueInvoices").GetInt32());
     }
 }

@@ -163,13 +163,14 @@ public class InsightsTests
     {
         var brief = await new Demo().Insights.GetDailyBriefAsync();
 
-        Assert.Equal(47_180m, brief.ReceivablesOverdue);
-        Assert.Equal(4, brief.OverdueInvoices);
-        Assert.Equal("C30000", brief.TopOverdueCustomers[0].CardCode);
-        Assert.Equal(1, brief.LateOrders);
+        Assert.Equal(518_830m, brief.ReceivablesOverdue);
+        Assert.Equal(9, brief.OverdueInvoices);
+        Assert.Equal("C54000", brief.TopOverdueCustomers[0].CardCode);
+        Assert.Equal(3, brief.LateOrders);
         Assert.Equal(["A00002", "C00002"], brief.TopReorders.Select(r => r.ItemCode));
-        var alert = Assert.Single(brief.CustomersOverLimit);
-        Assert.Equal(("C30000", 4_420m), (alert.CardCode, alert.OverBy));
+        Assert.Equal(4, brief.CustomersOverLimit.Count);
+        Assert.Contains(brief.CustomersOverLimit, c => c.CardCode == "C30000" && c.OverBy == 4_420m);
+        Assert.Equal("C54000", brief.CustomersOverLimit[0].CardCode); // ordered by largest exposure
     }
 
     [Fact]

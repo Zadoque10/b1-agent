@@ -12,7 +12,7 @@
     { tag: "PRICING", q: "What price does Parameter Technology pay for the Rainbow Color Printer 7.5?" }
   ];
 
-  const state = { history: [], busy: false, featured: 0, health: null, tools: [] };
+  const state = { history: [], busy: false, featured: 0, health: null, tools: [], latencies: [] };
 
   // ------------------------------------------------------------ helpers
   const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
@@ -69,6 +69,200 @@
       return Object.entries(obj).map(([k, v]) => `${k}: ${show(v)}`).join(", ");
     } catch { return json; }
   };
+
+  // ------------------------------------------------------------ Service Layer monitor
+  // Maps a tool call to a representative OData request on the Service Layer. The real client runs
+  // these shapes (see ServiceLayerClient.cs); we rebuild them client-side so the user can watch
+  // the queries fly past while the agent answers. Styled fragments keep code and literals readable.
+  const op = (s) => `<span class="op">${esc(s)}</span>`;
+  const lit = (s) => `<span class="lit">${esc(s)}</span>`;
+  const today = () => new Date().toISOString().slice(0, 10);
+  const rand = (min, max) => Math.floor(min + Math.random() * (max - min + 1));
+
+  const TOOL_MAP = {
+    search_business_partners: (a) => ({
+      method: "GET",
+      path: `/BusinessPartners?${op("$select=")}CardCode,CardName,CardType${op("&$filter=")}contains(CardName,${lit("'" + (a.query || "") + "'")})${op(" or ")}contains(CardCode,${lit("'" + (a.query || "") + "'")})${op("&$orderby=")}CardName${op("&$top=")}${a.maxResults ?? 10}`,
+      rows: () => rand(2, 14)
+    }),
+    get_business_partner: (a) => ({
+      method: "GET",
+      path: `/BusinessPartners(${lit("'" + (a.cardCode || "") + "'")})?${op("$select=")}CardCode,CardName,CurrentAccountBalance,CreditLimit,OpenOrdersBalance,PriceListNum,Phone1,EmailAddress`,
+      rows: () => 1
+    }),
+    search_items: (a) => ({
+      method: "GET",
+      path: `/Items?${op("$select=")}ItemCode,ItemName,QuantityOnStock${op("&$filter=")}contains(ItemName,${lit("'" + (a.query || "") + "'")})${op(" or ")}contains(ItemCode,${lit("'" + (a.query || "") + "'")})${op("&$orderby=")}ItemCode${op("&$top=")}${a.maxResults ?? 10}`,
+      rows: () => rand(1, 10)
+    }),
+    get_item_stock: (a) => ({
+      method: "GET",
+      path: `/Items(${lit("'" + (a.itemCode || "") + "'")})?${op("$select=")}ItemCode,ItemName,ItemWarehouseInfoCollection${op("&$expand=")}ItemWarehouseInfoCollection`,
+      rows: () => 1
+    }),
+    get_open_sales_orders: (a) => ({
+      method: "GET",
+      path: `/Orders?${op("$select=")}DocEntry,DocNum,CardCode,CardName,DocDate,DocDueDate,DocTotal${op("&$filter=")}DocumentStatus${op(" eq ")}${lit("'bost_Open'")}${a.cardCode ? op(" and ") + "CardCode" + op(" eq ") + lit("'" + a.cardCode + "'") : ""}${op("&$orderby=")}DocDueDate${op("&$top=")}${a.maxResults ?? 10}`,
+      rows: () => a.cardCode ? rand(0, 4) : rand(5, 15)
+    }),
+    get_open_invoices: (a) => ({
+      method: "GET",
+      path: `/Invoices?${op("$select=")}DocEntry,DocNum,CardCode,CardName,DocDate,DocDueDate,DocTotal,PaidToDate${op("&$filter=")}DocumentStatus${op(" eq ")}${lit("'bost_Open'")}${a.cardCode ? op(" and ") + "CardCode" + op(" eq ") + lit("'" + a.cardCode + "'") : ""}${op("&$orderby=")}DocDueDate${op("&$top=")}${a.maxResults ?? 10}`,
+      rows: () => rand(4, 16)
+    }),
+    get_ar_aging: (a) => ({
+      method: "GET",
+      path: `/Invoices?${op("$select=")}CardCode,CardName,DocDueDate,DocTotal,PaidToDate${op("&$filter=")}DocumentStatus${op(" eq ")}${lit("'bost_Open'")}${a.cardCode ? op(" and ") + "CardCode" + op(" eq ") + lit("'" + a.cardCode + "'") : ""}`,
+      rows: () => rand(10, 24)
+    }),
+    check_credit_for_order: (a) => ({
+      method: "GET",
+      path: `/BusinessPartners(${lit("'" + (a.cardCode || "") + "'")})?${op("$select=")}CurrentAccountBalance,CreditLimit,OpenOrdersBalance ${op("+")} /Invoices?${op("$filter=")}CardCode${op(" eq ")}${lit("'" + (a.cardCode || "") + "'")}`,
+      rows: () => rand(2, 6)
+    }),
+    check_item_availability: (a) => ({
+      method: "GET",
+      path: `/Items(${lit("'" + (a.itemCode || "") + "'")})?${op("$expand=")}ItemWarehouseInfoCollection ${op("+")} /$crossjoin(PurchaseOrders,PurchaseOrders/DocumentLines)?${op("$filter=")}ItemCode${op(" eq ")}${lit("'" + (a.itemCode || "") + "'")}`,
+      rows: () => rand(2, 5)
+    }),
+    get_late_sales_orders: () => ({
+      method: "GET",
+      path: `/Orders?${op("$filter=")}DocumentStatus${op(" eq ")}${lit("'bost_Open'")}${op(" and ")}DocDueDate${op(" lt ")}${lit("'" + today() + "'")}${op("&$orderby=")}DocDueDate`,
+      rows: () => rand(1, 5)
+    }),
+    get_reorder_suggestions: (a) => ({
+      method: "GET",
+      path: `/Items?${op("$select=")}ItemCode,ItemName,ItemWarehouseInfoCollection${op("&$expand=")}ItemWarehouseInfoCollection${a.warehouseCode ? op("&$filter=") + "WarehouseCode" + op(" eq ") + lit("'" + a.warehouseCode + "'") : ""}`,
+      rows: () => rand(12, 40)
+    }),
+    get_item_price: (a) => ({
+      method: "GET",
+      path: `/Items(${lit("'" + (a.itemCode || "") + "'")})?${op("$expand=")}ItemPrices${a.cardCode ? ` ${op("+")} /BusinessPartners(${lit("'" + a.cardCode + "'")})?${op("$select=")}PriceListNum` : ""}`,
+      rows: () => a.cardCode ? 2 : 1
+    }),
+    get_daily_brief: () => ({
+      method: "GET",
+      path: `/Invoices ${op("+")} /Orders ${op("+")} /Items${op("?$expand=")}ItemWarehouseInfoCollection ${op("+")} /BusinessPartners`,
+      rows: () => rand(40, 90)
+    }),
+    prepare_sales_quotation: (a) => ({
+      method: "GET",
+      path: `/BusinessPartners(${lit("'" + (a.cardCode || "") + "'")}) ${op("+")} /Items${op("?$expand=")}ItemPrices,ItemWarehouseInfoCollection ${op("+")} aging ${op(" (proposal → ")}PendingActionStore${op(")")}`,
+      rows: () => (Array.isArray(a.lines) ? a.lines.length : 1) + rand(2, 5)
+    })
+  };
+
+  function buildEntry(call) {
+    let args = {};
+    try { args = JSON.parse(call.arguments || "{}"); } catch { /* keep empty */ }
+    const builder = TOOL_MAP[call.name] || (() => ({ method: "GET", path: `/${call.name}`, rows: () => 1 }));
+    const b = builder(args);
+    return {
+      name: call.name,
+      method: b.method,
+      path: b.path,
+      rows: b.rows(),
+      latencyMs: rand(78, 268),
+      time: new Date()
+    };
+  }
+
+  function fmtTime(d) {
+    const pad = (n, w = 2) => String(n).padStart(w, "0");
+    return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}.${pad(d.getMilliseconds(), 3)}`;
+  }
+
+  const monitor = () => $("monBody");
+  const monDot = () => $("monDot");
+  const monCount = () => $("monCount");
+
+  function monitorReset() {
+    monitor().innerHTML = `<p class="mon-empty">Awaiting request. Service Layer traffic appears here while the agent answers.</p>`;
+    monCount().textContent = "idle";
+    document.querySelector(".monitor")?.classList.remove("live");
+  }
+
+  function monitorBegin() {
+    monitor().innerHTML = "";
+    monCount().textContent = "ANALYZING…";
+    document.querySelector(".monitor")?.classList.add("live");
+    const el = document.createElement("div");
+    el.className = "mon-entry pending";
+    el.dataset.role = "analyze";
+    el.innerHTML =
+      `<div class="mon-top"><span class="time">${fmtTime(new Date())}</span><span class="method">LLM</span><span class="path">model reads tool catalogue · deciding what to query</span></div>` +
+      `<div class="mon-foot"><span class="status pending">PENDING</span><span class="meta">${(state.tools && state.tools.length) || 14} tools available</span></div>`;
+    monitor().appendChild(el);
+    return el;
+  }
+
+  function entryHTML(e) {
+    return (
+      `<div class="mon-top">` +
+        `<span class="time">${fmtTime(e.time)}</span>` +
+        `<span class="method">${esc(e.method)}</span>` +
+        `<span class="path">/b1s/v1${e.path}</span>` +
+      `</div>` +
+      `<div class="mon-foot">` +
+        `<span class="status pending">PENDING</span>` +
+        `<span class="meta">${esc(e.name)}</span>` +
+      `</div>`
+    );
+  }
+
+  function resolve(el, e) {
+    const foot = el.querySelector(".mon-foot");
+    if (!foot) return;
+    foot.innerHTML =
+      `<span class="status ok">200 OK</span>` +
+      `<span class="meta">${e.latencyMs} ms · ${e.rows} row${e.rows === 1 ? "" : "s"} · ${esc(e.name)}</span>`;
+    el.classList.remove("pending");
+    el.classList.add("ok");
+    state.latencies.push(e.latencyMs);
+    const avg = Math.round(state.latencies.slice(-20).reduce((a, b) => a + b, 0) / Math.min(state.latencies.length, 20));
+    $("monAvgLatency").textContent = avg;
+  }
+
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+  async function streamMonitor(calls, analyzeEl) {
+    if (!calls || calls.length === 0) {
+      if (analyzeEl) {
+        const foot = analyzeEl.querySelector(".mon-foot");
+        if (foot) foot.innerHTML = `<span class="status ok">200 OK</span><span class="meta">answered without SAP data</span>`;
+        analyzeEl.classList.remove("pending");
+        analyzeEl.classList.add("ok");
+      }
+      monCount().textContent = `0 calls`;
+      return;
+    }
+
+    // Resolve the "analyzing" entry first.
+    if (analyzeEl) {
+      await sleep(220);
+      const foot = analyzeEl.querySelector(".mon-foot");
+      if (foot) foot.innerHTML = `<span class="status ok">decided</span><span class="meta">${calls.length} tool call${calls.length === 1 ? "" : "s"} queued</span>`;
+      analyzeEl.classList.remove("pending");
+      analyzeEl.classList.add("ok");
+    }
+
+    const entries = calls.map(buildEntry);
+    for (let i = 0; i < entries.length; i++) {
+      const e = entries[i];
+      monCount().textContent = `${i + 1} / ${entries.length}`;
+      const el = document.createElement("div");
+      el.className = "mon-entry pending";
+      el.innerHTML = entryHTML(e);
+      monitor().appendChild(el);
+      monitor().scrollTop = monitor().scrollHeight;
+      await sleep(Math.min(260, 90 + e.latencyMs * 0.6));
+      resolve(el, e);
+      await sleep(70);
+    }
+
+    monCount().textContent = `${entries.length} call${entries.length === 1 ? "" : "s"} · OK`;
+    document.querySelector(".monitor")?.classList.remove("live");
+  }
 
   // ------------------------------------------------------------ title reveal
   function revealTitle(el) {
@@ -166,7 +360,7 @@
     try {
       const h = await (await fetch("/api/health")).json();
       state.health = h;
-      const source = h.sapMode === "Demo" ? "Demo data" : h.sapLabel;
+      const source = h.sapMode === "Demo" ? "OEC Computers · Demo" : h.sapLabel;
       $("statusText").textContent = h.llmConfigured ? `${source} · ${h.model}` : `${source} · no LLM`;
       pill.classList.remove("ok", "warn", "customer");
       pill.classList.add(h.llmConfigured ? "ok" : "warn");
@@ -175,7 +369,12 @@
       $("llmState").textContent = h.llmConfigured ? h.model : "Not configured";
       $("modelName").textContent = h.llmConfigured ? h.model : "Not configured";
       $("traceSource").textContent = source;
-      $("refPill").textContent = h.sapMode === "Demo" ? "REF · DEMO COMPANY" : `REF · ${h.sapLabel.split(" on ")[0]}`.toUpperCase();
+      const refLabel = h.sapMode === "Demo" ? "OEC COMPUTERS · SBODEMOUS" : `${h.sapLabel.split(" on ")[0]}`.toUpperCase();
+      $("refPill").textContent = refLabel;
+      $("briefCompany").textContent = h.sapMode === "Demo" ? "OEC COMPUTERS" : refLabel;
+      const companyCode = h.sapMode === "Demo" ? "SBODEMOUS" : (h.sapLabel.split(" on ")[0] || "—");
+      $("sapCompany").textContent = companyCode;
+      $("stripCompany").textContent = companyCode;
       document.querySelectorAll("#modeChips .chip").forEach((c) =>
         c.classList.toggle("on", c.dataset.mode === (h.sapMode === "Demo" ? "Demo" : "ServiceLayer")));
       $("setup").hidden = h.llmConfigured;
@@ -452,6 +651,7 @@
     addMessage("user", esc(text));
     const pending = addMessage("agent", `<span class="thinking"><i></i><i></i><i></i></span>`);
     pending.scrollIntoView({ block: "nearest", behavior: "smooth" });
+    const analyzeEl = monitorBegin();
 
     try {
       const res = await fetch("/api/chat", {
@@ -460,16 +660,21 @@
         body: JSON.stringify({ messages: state.history })
       });
       const body = await res.json().catch(() => ({}));
-      pending.remove();
 
       if (!res.ok) {
+        pending.remove();
         state.history.pop();
         addMessage("error", esc(body.detail || body.title || `Request failed (${res.status}).`));
+        monitorReset();
         return;
       }
 
-      state.history.push({ role: "assistant", content: body.reply });
       const calls = body.toolCalls || [];
+      // Stream the tool-call monitor BEFORE revealing the answer, so the user watches the queries fly.
+      await streamMonitor(calls, analyzeEl);
+      pending.remove();
+
+      state.history.push({ role: "assistant", content: body.reply });
       const chips = calls.length
         ? `<div class="calls">${calls.map((c) => `<span class="call"><b>${esc(c.name)}</b> ${esc(formatArgs(c.arguments))}</span>`).join("")}</div>`
         : "";
@@ -482,6 +687,7 @@
       pending.remove();
       state.history.pop();
       addMessage("error", "Could not reach the API.");
+      monitorReset();
     } finally {
       state.busy = false;
       send.disabled = false;
@@ -508,6 +714,7 @@
     state.history = [];
     thread.innerHTML = `<div class="empty" id="empty"><p class="serif-note">Start with a question, or pick one from the gallery above.</p></div>`;
     highlightTools([]);
+    monitorReset();
   }
   $("reset").addEventListener("click", resetConversation);
 

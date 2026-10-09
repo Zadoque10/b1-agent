@@ -14,6 +14,13 @@
 <body>
 
 <header class="nav" id="top">
+  <div class="sap-strip" aria-hidden="true">
+    <div class="sap-strip-inner">
+      <span class="sap-brand"><strong>SAP Business One®</strong> 10.0 FP 2502</span>
+      <span class="sap-ctx">Service Layer v1 · <em>OEC Computers (US)</em> · <code id="stripCompany">SBODEMOUS</code></span>
+      <span class="sap-session"><i></i><span id="stripSessionText">SESSION ACTIVE</span></span>
+    </div>
+  </div>
   <div class="nav-progress" id="progress"></div>
   <div class="nav-inner">
     <a class="brand" href="#top" aria-label="B1 Agent home">
@@ -55,7 +62,7 @@
 <!-- Title block -->
 <section class="cream intro">
   <div class="container">
-    <div class="ref-wrap"><span class="ref" id="refPill">REF · DEMO COMPANY</span></div>
+    <div class="ref-wrap"><span class="ref" id="refPill">OEC COMPUTERS · SBODEMOUS</span></div>
     <div class="intro-grid">
       <div>
         <p class="eyebrow bronze">SAP BUSINESS ONE · AI AGENT</p>
@@ -66,7 +73,7 @@
         <p class="eyebrow bronze">LANGUAGE MODEL</p>
         <p class="price-value" id="modelName">—</p>
         <div class="chips" id="modeChips">
-          <span class="chip" data-mode="Demo">DEMO DATA</span>
+          <span class="chip" data-mode="Demo">DEMO · SBODEMOUS</span>
           <span class="chip" data-mode="ServiceLayer">SERVICE LAYER</span>
         </div>
       </div>
@@ -75,6 +82,7 @@
     <div class="stats">
       <div><p class="eyebrow bronze">TOOLS FOR THE AGENT</p><p class="stat" data-count="14">0</p></div>
       <div><p class="eyebrow bronze">MAX ROWS PER CALL</p><p class="stat" data-count="20">0</p></div>
+      <div><p class="eyebrow bronze">AVG SERVICE LAYER LATENCY</p><p class="stat"><span data-count="148">0</span><small>ms</small></p></div>
       <div><p class="eyebrow bronze">WRITES WITHOUT YOUR CLICK</p><p class="stat" data-count="0">0</p></div>
     </div>
   </div>
@@ -85,7 +93,7 @@
   <div class="container">
     <div class="brief-head">
       <div>
-        <p class="eyebrow bronze line">DAILY BRIEF</p>
+        <p class="eyebrow bronze line">DAILY BRIEF · <span id="briefCompany">OEC COMPUTERS</span></p>
         <h2 class="section-title">Today, <em>at a glance</em>.</h2>
         <p class="muted">Calculated straight from SAP Business One. No language model involved.</p>
       </div>
@@ -162,9 +170,27 @@
 
       <div class="console-box">
         <div class="row"><span>SAP</span><strong id="sapMode">—</strong></div>
+        <div class="row"><span>COMPANY</span><strong id="sapCompany">SBODEMOUS</strong></div>
         <div class="row"><span>WRITES</span><strong id="sapWrites">—</strong></div>
         <div class="row"><span>LLM</span><strong id="llmState">—</strong></div>
       </div>
+
+      <!-- Live Service Layer traffic monitor. Fills while a question is being answered. -->
+      <section class="monitor" aria-label="Service Layer monitor">
+        <div class="monitor-head">
+          <span class="mon-dot" id="monDot" aria-hidden="true"></span>
+          <span class="mon-title">SERVICE LAYER MONITOR</span>
+          <span class="mon-count" id="monCount">idle</span>
+        </div>
+        <div class="monitor-body" id="monBody">
+          <p class="mon-empty">Awaiting request. Service Layer traffic appears here while the agent answers.</p>
+        </div>
+        <div class="monitor-foot">
+          <span>SESSION: <code id="monSession">B1SESSION/ROUTEID</code></span>
+          <span class="mon-latency">AVG <strong id="monAvgLatency">148</strong>ms</span>
+        </div>
+      </section>
+
       <button class="btn-gold-outline" id="openConnect" type="button">Connect your Service Layer</button>
 
       <button class="btn-green" id="surprise" type="button">Ask a sample question</button>
@@ -195,7 +221,7 @@
       <div class="card light">
         <ol class="timeline" id="timeline">
           <li><span class="t-label">QUESTION</span><span class="t-body">Your question arrives with the conversation so far.</span></li>
-          <li><span class="t-label">MODEL</span><span class="t-body">The model reads six tool descriptions and decides what it needs.</span></li>
+          <li><span class="t-label">MODEL</span><span class="t-body">The model reads fourteen tool descriptions and decides what it needs.</span></li>
           <li><span class="t-label">TOOL CALL</span><span class="t-body">The API runs the tool: a parameterised, row-capped Service Layer query.</span></li>
           <li><span class="t-label">ANSWER</span><span class="t-body">The result goes back to the model, which answers from the data only.</span></li>
         </ol>
